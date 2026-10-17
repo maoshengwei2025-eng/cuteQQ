@@ -1,0 +1,193 @@
+﻿//style 外观样式
+namespace plusStyle{
+    primaryButton = {
+        background={
+            default=0xFF8FB2B0;
+            hover=0xFF928BB3;
+            disabled=0xFFd2d2d2; 
+        }
+    };
+    button = {
+        background={
+            default=0x668FB2B0;
+            hover=0xFF928BB3;
+            disabled=0xFFd2d2d2; 
+        }
+        color={
+            default=0xff000000;
+            hover=0xffFFffff;
+            disabled=0xFFd2d2d2;
+        }
+    };
+    buttonLayuiDefault = {
+        background={
+            default=0xff16baaa;
+            hover=0xFF45C8BB;
+            active=0xFF45C8BB;
+            disabled=0xFFd2d2d2; 
+        }
+        border = { 
+            hover = {width=1;color=0x00000000;padding=10;} 
+            active = {bottom=5;color=0xFF00FF00;padding=10;}  
+            default = {width=1;color=0x00000000;padding=10;} 
+            disabled= {width=2;color=0xFFd2d2d2;padding=10;}
+        }
+        color={
+            default=0xffFFffff;
+            hover=0xffFFffff;
+            disabled=0xFFd2d2d2;
+        }
+        iconColor = { 
+            default =0xffFFFF45;
+            hover=0x00FFffff;
+            disabled=0xFFd2d2d2;
+        }
+    };
+    buttonLayuiBlue = {
+        background={
+            default=0xFF1E9FFF;
+            hover=0xFF59B8FF;
+            disabled=0xFFfbfbfb; 
+        }
+        border = { 
+            hover = {width=1;color=0x00000000;padding=10;} 
+            active = {bottom=5;color=0xFF00FF00;padding=10;}  
+            default = {width=1;color=0x00000000;padding=10;} 
+            disabled= {width=2;color=0xFFd2d2d2;padding=10;}
+        }
+        color={
+            default=0xffFFffff;
+            hover=0xffFFffff;
+            disabled=0xFFd2d2d2;
+        }
+        iconColor = { 
+            default =0xffFFFF45;
+            hover=0x00FFffff;
+            disabled=0xFFd2d2d2;
+        }
+    };
+    buttonLayuiOrange = {
+        background={
+            default=0xFFFFB800;
+            hover=0xFFFFCE4F;
+            disabled=0xFFfbfbfb; 
+        }
+        border = { 
+            hover = {width=1;color=0x00000000;padding=10;} 
+            active = {bottom=5;color=0xFF00FF00;padding=10;}  
+            default = {width=1;color=0x00000000;padding=10;} 
+            disabled= {width=2;color=0xFFd2d2d2;padding=10;}
+        }
+        color={
+            default=0xffFFffff;
+            hover=0xffFFffff;
+            disabled=0xFFd2d2d2;
+        }
+        iconColor = { 
+            default =0xffFFFF45;
+            hover=0x00FFffff;
+            disabled=0xFFd2d2d2;
+        }
+    };
+    buttonLayuiRed = {
+        background={
+            default=0xFFFF5722;
+            hover=0xFFFF835C;
+            disabled=0xFFfbfbfb; 
+        }
+        border = { 
+            hover = {width=1;color=0x00000000;padding=10;} 
+            active = {bottom=5;color=0xFF00FF00;padding=10;}  
+            default = {width=1;color=0x00000000;padding=10;} 
+            disabled= {width=2;color=0xFFd2d2d2;padding=10;}
+        }
+        color={
+            default=0xffFFffff;
+            hover=0xffFFffff;
+            disabled=0xFFd2d2d2;
+        }
+        iconColor = { 
+            default =0xffFFFF45;
+            hover=0x00FFffff;
+            disabled=0xFFd2d2d2;
+        }
+    };
+    buttonLayuiPurple = {
+        background={
+            default=0xFFA233C6;
+            hover=0xFFB16FC7;
+            disabled=0xFFfbfbfb; 
+        }
+        border = { 
+            hover = {width=1;color=0x00000000;padding=10;} 
+            active = {bottom=5;color=0xFF00FF00;padding=10;}  
+            default = {width=1;color=0x00000000;padding=10;} 
+            disabled= {width=2;color=0xFFd2d2d2;padding=10;}
+        }
+        color={
+            default=0xffFFffff;
+            hover=0xffFFffff;
+            disabled=0xFFd2d2d2;
+        }
+        iconColor = { 
+            default =0xffFFFF45;
+            hover=0x00FFffff;
+            disabled=0xFFd2d2d2;
+        }
+    };
+    //#16baaa
+    transButton = {
+        background={
+            default=0;
+            hover=0xFF928BB3;
+            disabled=0xFFd2d2d2; 
+        }
+    };
+    checkBox = {
+        color = { 
+            hover = 0xFFFF0000; 
+            active = 0xFF00FF00;
+        }
+        checked = {
+            color = { 
+                hover = 0xFFFF0000; 
+                active = 0xFF00FF00;
+            }
+            text = '\uF14a'/*_FA_CHECK_SQUARE*/
+        }     
+    };
+    radio ={
+        group = "PinyinMix";
+        color = { 
+            hover = 0xFFFF0000; 
+            active = 0xFF00FF00;
+        }
+        checked = {  
+            text = '\uF058'/*_FA_CHECK_CIRCLE*/
+        }     
+    };
+    link = {
+        color = { 
+            hover = 0xFFFF0000; 
+            active = 0xFF00FF00; 
+        }
+    };
+    dropdown = { 
+        foreground={
+            default = 0xFFFFFFFF;
+            hover= 0xFF8ADBAF;
+        };
+        checked = { 
+            foreground={
+                default = 0xFFDB8A8E;
+                hover= 0xFF8ADBAF;
+            }; 
+        }
+    };
+    key = {
+        foreground={
+            default = 0x00FFFFFF;
+            hover= 0xFF8ADBAF;
+        };
+    };
+}

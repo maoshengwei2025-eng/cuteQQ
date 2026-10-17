@@ -1,0 +1,177 @@
+﻿//trayIcon 托盘图标库
+import win;
+import win.image;
+import win.util.tray;
+import win.ui.menu;
+import util.metaProperty; 
+
+class trayIcon {
+    ctor( winform, icon, tip ){
+        this._form = winform;
+		var me = this; // 定义一个局部变量引用实例，确保闭包内访问稳定
+		
+		var hTrayIcon = icon;
+		if(!hTrayIcon){
+    		// 如果没有传入图标，则获取当前窗口的大图标句柄
+    		hTrayIcon = ..win.image.getIcon(winform.hwnd, true/*_ICON_BIG*/);
+		}
+
+        // 1. 创建托盘图标对象
+        this.tray = ..win.util.tray(winform, hTrayIcon);
+        this.tray.tip = tip || winform.text; 
+
+        // 2. 默认行为控制属性
+        this.minimizeToTray = true; 
+        this.restoreOnDblClick = true; 
+
+        // 3. 关联菜单变量
+        this.popMenu = null;
+
+        // 必须在 winform 上定义 onTrayMessage 才能响应托盘事件
+        winform.onTrayMessage = {
+			[0x205/*_WM_RBUTTONUP*/  ] = function(wParam){
+				// 右键单击
+				if( me.popMenu && me.popMenu.popup ){ 
+                    ..win.setForeground(winform.hwnd);
+                    me.popMenu.popup();
+                }
+                if(me.onRightClick) me.onRightClick();    
+			};
+			[0x203/*_WM_LBUTTONDBLCLK*/] = function(wParam){ 
+				// 左键双击
+				if( me.restoreOnDblClick ){
+                    me.restore();
+                }
+                if(me.onDblClick) me.onDblClick();
+			}; 
+			[0x202/*_WM_LBUTTONUP*/] = function(wParam){ 
+				// 左键单击
+                if( winform.hide==false) ..win.setForeground(winform.hwnd) //前置窗口
+            }  
+		}
+
+        // 4. 拦截窗口最小化事件
+        winform.onMinimize = function(){
+            if(me.minimizeToTray){ 
+                me._form.show(false);	// 隐藏窗口（不显示在任务栏）
+                return true;			// 拦截默认最小化动作
+            }
+        };
+        
+        // 5. 窗口关闭时自动清理托盘（防止残留）
+        winform.onClose = function(){
+			if(me.tray){
+                me.tray.delete();
+                me.tray = null;
+            }
+        }
+        
+        // 定义闪烁状态变量
+        this.$icon = me.tray.icon;
+		var isIconVisible = true; 
+		this.twinkle = function(isTwinkle){
+    		// 1. 如果是停止闪烁
+    		if(!isTwinkle){
+        		if(this.dockTimerId) {
+            		me._form.clearInterval(this.dockTimerId);
+            		this.dockTimerId = null;
+        		}
+        		// 恢复图标显示
+        		isIconVisible = true;
+        		me.tray.setIcon(this.$icon);
+        		return;
+    		}
+		
+    		// 2. 如果是开启闪烁（防止重复启动定时器）
+    		if(this.dockTimerId) return; 
+		
+    		this.dockTimerId = me._form.setInterval(
+        		400, // 推荐 400-500ms，视觉效果最舒适
+        		function() {
+            		isIconVisible = !isIconVisible;
+		
+            		if(isIconVisible){
+                		// 使用 setIcon 方法确保 Shell_NotifyIcon 立即执行修改
+                		me.tray.setIcon(this.$icon);
+            		}
+            		else {
+                		// 设置为 null（或 0）实现隐藏效果
+                		me.tray.setIcon(null);
+            		}
+        		}
+    		) 
+		}
+    	
+    }; /*ctor End*/
+
+    // 恢复显示窗口
+    restore = function(){
+        this._form.show(0x9/*_SW_RESTORE*/); //恢复并激活窗口
+        ..win.setForeground(this._form.hwnd);
+    };
+
+    // 设置菜单
+    setMenu = function(menuTable){
+        this.popMenu = ..win.ui.popmenu(this._form);
+        this.popMenu.addTable(menuTable);
+    };
+
+    // 修改图标
+    setIcon = function(icon){
+        if(this.tray) this.tray.setIcon(icon);
+    };
+    
+    // 修改气泡提示
+    setTip = function(tip){
+        if(this.tray) this.tray.tip = tip;
+    }
+	
+	@_metaProperty;
+}
+
+namespace trayIcon{
+	 _metaProperty = ..util.metaProperty(
+	 	icon =	{
+	 		get = lambda() owner.$icon;
+            _set = function(v) { owner.$icon = v; };
+	 	}
+	 )
+}
+
+
+/**intellisense()
+win.ui.trayIcon(.(winform,图标,提示) = 创建托盘辅助类。\n参数2可选，默认为窗口图标。\n参数3可选，默认为窗口标题。
+win.ui.trayIcon() = !win_ui_trayIcon.
+!win_ui_trayIcon.minimizeToTray = 布尔值，是否开启最小化到托盘，默认为 true。
+!win_ui_trayIcon.restoreOnDblClick = 布尔值，是否开启左键双击恢复窗口，默认为 true。
+!win_ui_trayIcon.setMenu(菜单表) = 设置右键弹出菜单，参数格式同 win.ui.menu().addTable()。
+!win_ui_trayIcon.restore() = 恢复窗口显示。
+!win_ui_trayIcon.setIcon(.(图标句柄) = 动态修改托盘图标。
+!win_ui_trayIcon.setTip(.(提示字符串) = 修改鼠标悬停提示。
+!win_ui_trayIcon.twinkle(闪烁开关) = 托盘图标是否闪烁。
+!win_ui_trayIcon.onDblClick = @.onDblClick = function(){\n  __/*左键双击自定义回调*/\n}
+!win_ui_trayIcon.onRightClick = @.onRightClick = function(){\n  __/*右键单击自定义回调*/\n}
+end intellisense**/
+
+
+/**
+//调用托盘图标库
+import trayIcon;
+var tray = trayIcon(winform);
+tray.setMenu(
+	{
+           { "显示窗体"; 
+                function(id){  
+                   tray.restore();
+               }
+            };
+            { /*分隔线*/ };
+            { "退出程序"; 
+                function(id){  
+                   winform.close();
+               }
+            };
+        }
+);
+
+**/

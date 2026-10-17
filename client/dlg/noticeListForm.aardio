@@ -1,0 +1,14 @@
+import win.ui;
+import plusList;
+/*DSG{{*/
+var winform = win.form(text="系统消息";right=527;bottom=319;exmode="toolwindow";max=false;min=false)
+winform.add(
+plus={cls="plus";left=16;top=16;right=512;bottom=296;anchors={left=1;top=1;right=1;bottom=1};edge=1;z=1}
+)
+/*}}*/
+
+winform.msglist = plusList(winform.plus);
+winform.msglist.itemHeight = 40;
+winform.msglist.textPadding.left = 40;
+
+return winform;

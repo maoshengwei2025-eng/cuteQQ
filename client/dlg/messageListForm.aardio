@@ -1,0 +1,112 @@
+import win.ui;
+import plusList;
+import plusStyle;
+/*DSG{{*/
+var winform = win.form(text='\uD83D\uDCC3聊天记录';right=823;bottom=455;exmode="toolwindow")
+winform.add(
+btnNextPage={cls="plus";text="下一页";left=720;top=416;right=800;bottom=440;anchors={right=1;bottom=1};bgcolor=0x8FB2B0;font=LOGFONT(h=-13);notify=1;z=5};
+btnPrevPage={cls="plus";text="上一页";left=624;top=416;right=704;bottom=440;anchors={right=1;bottom=1};bgcolor=0x8FB2B0;font=LOGFONT(h=-13);notify=1;z=4};
+lblPage={cls="static";left=392;top=416;right=576;bottom=440;align="right";anchors={right=1;bottom=1};center=1;font=LOGFONT(h=-14);transparent=1;z=6};
+listview={cls="listview";left=240;top=32;right=800;bottom=408;anchors={top=1;right=1;bottom=1};edge=1;z=2};
+plus={cls="plus";left=24;top=32;right=227;bottom=408;anchors={left=1;top=1;bottom=1};edge=1;z=1};
+splitter={cls="splitter";left=224;top=32;right=236;bottom=408;z=3}
+)
+/*}}*/
+
+winform.btnNextPage.skin(plusStyle.buttonLayuiDefault);
+winform.btnPrevPage.skin(plusStyle.buttonLayuiDefault);
+
+winform.splitter.split( winform.plus, winform.listview )  
+winform.splitter.ltMin = 150; //左边控件最小宽度
+winform.splitter.rbMin = 300; //右边控件最小宽度
+
+//左侧好友列表
+winform.userList = plusList(winform.plus);
+winform.onLoadFriendList = function(datas){
+	winform.userList.listData = datas; 
+    winform.userList.refresh();
+}
+
+import win.ui.grid;
+var grid = win.ui.grid(winform.listview);//创建数据视图
+grid.columns = {
+    {"时间", 150},
+    {"发件人", 100},
+    {"内容", -1}
+}
+
+var totalPages = 0;
+var curPage = 0;
+var pageSize = 25;
+
+var showHistoryMsgs = function(me, friend, curPage){
+	var records  = winform.db.getHistoryByPage(me, friend, curPage, pageSize)
+	var datas ={};
+	for i,v in table.eachIndex(records){
+		table.push(datas,{v.timestamp; v.from_user; v.content});
+	}
+    // 将查询结果加载到 grid 数据视图
+    grid.setTable(datas);
+    
+    // 更新页码显示文本
+    winform.lblPage.text = string.format("第 %d / %d 页", curPage, totalPages);
+
+    //设置翻页按钮的可用性
+    if(totalPages<=1){
+    	winform.btnNextPage.hide = true;
+    	winform.btnPrevPage.hide = true;
+    }else{
+    	winform.btnNextPage.hide= (curPage>=totalPages);
+    	winform.btnPrevPage.hide = (curPage<=1);
+    }
+}
+
+// 点击上一页
+winform.btnPrevPage.oncommand = function(id,event){
+	if(curPage>1){
+		curPage--;
+		showHistoryMsgs(winform.curUser, winform.friendName, curPage);
+	}
+}
+
+// 点击下一页
+winform.btnNextPage.oncommand = function(id,event){
+	if(curPage<totalPages){
+		curPage++;
+		showHistoryMsgs(winform.curUser, winform.friendName, curPage);
+	}
+}
+
+// 监听好友列表项选中事件
+winform.userList.onItemClick  = function(index,text){
+    if(!index) return;
+     
+    // 获取好友标识（假设数据项中包含 name 字段作为文件名）
+    winform.friendName = text;
+    if(!#winform.friendName) return;
+    
+    //获取总页数
+    var res = winform.db.getHistoryCount(winform.curUser, winform.friendName);	
+    var totalCount = res ? res.counts : 0;
+
+    if(totalCount == 0){
+        grid.setTable({});
+        totalPages = 0;
+        curPage = 0;
+        winform.lblPage.text = "暂无记录";
+        winform.btnNextPage.hide = true;
+        winform.btnPrevPage.hide = true;
+        return;
+    }
+    
+    totalPages = math.ceil(totalCount / pageSize);
+    curPage =1; // 默认先加载第一页
+	
+	//显示数据
+	showHistoryMsgs(winform.curUser, winform.friendName, curPage);
+}
+
+winform.btnNextPage.hide = true;
+winform.btnPrevPage.hide = true;
+    
+return winform;

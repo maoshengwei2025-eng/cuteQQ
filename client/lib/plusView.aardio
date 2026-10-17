@@ -1,0 +1,594 @@
+//plusView 选择头像控件
+import win.ui;
+import win.ui.tooltip;
+import gdip;
+import gdip.family;
+import fonts.fontAwesome;
+
+class plusView {
+        ctor(winform, ctrl){
+            if(ctrl.cls != "plus") error("必须在 plus 控件上构造", 2);
+			this = ctrl; 
+			this.notify = true;
+            this.buffered = true;
+
+            var scaleX, scaleY = winform.getScale();
+
+            // --- 布局配置参数 ---
+            this.itemWidth = 150 * scaleX;   
+            this.autoHeight = true; //默认紧凑型间距（当值为false时，用户设置的itemHeight生效）
+            this.itemHeight = 174 * scaleY; 
+
+            // 【间距配置】
+            this.basePadding = 5 * scaleY;       
+            this.imgPadding = 5 * scaleY;         
+            this.titleImgGap = 5 * scaleY;        
+            this.textLineGap = 2 * scaleY;        
+            
+            this.titleHeight = 18 * scaleY;       
+            this.subTitleHeight = 16 * scaleY;    
+
+            this.viewPadding = { left = 10 * scaleX; top = 10 * scaleY; right = 10 * scaleX; bottom = 10 * scaleY }; 
+            this.scrollBarWidth = 10 * scaleX; 
+
+            // --- 数据与运行状态 ---
+            this.listData = {}; 
+            this.selectedIndex = 1; 
+            this.scrollPos = 0;      
+            this.targetScrollPos = 0;
+            this.mouseOver = false;  
+            this.enableHover = true; 
+            this.lastTipIndex = -1;  
+
+            // --- 显示控制属性 ---
+            this.showTitle = true;    
+            this.showSubTitle = true; 
+
+            // --- 颜色配置 ---
+            this.itemHoverBgColor = 0x150078D4;  
+            this.itemSelectBgColor = 0x350078D4; 
+            this.textColor = 0xFF333333;        
+            this.subTextColor = 0xFF888888;     
+            this.thumbColor = 0xFFCDCDCD;       
+            this.trackColor = 0xFFF1F1F1;       
+
+            // --- 绘图资源初始化 ---
+            var family = ..gdip.family("Microsoft YaHei" : "SimSun");
+            var fontTitle = family.createFont(9, 1/*_FontStyleBold*/, 3/*_UnitPoint*/); 
+            var fontSub = family.createFont(8, 0, 3/*_UnitPoint*/);
+
+            var strFormat = ..gdip.stringformat();
+            strFormat.align = 1; 
+            strFormat.lineAlign = 1; 
+            strFormat.trimming = 5/*_GdipStringTrimmingEllipsisPath*/;  
+            strFormat.flags = 0x1000/*_StringFormatFlagsNoWrap*/;
+
+            var tooltip = ..win.ui.tooltip(winform);
+			var showAnimation = false; //判断是否显示gif动画
+			var scrollTimerId;      // 定时器ID
+			
+            // --- 核心布局计算函数 ---
+            this.getLayoutInfo = function(){
+                var rc = this.getClientRect();
+                if(!rc.width || !rc.height) return 1,0,0,0,0, this.itemHeight; 
+
+                var currentItemH = 0;
+
+                if(this.autoHeight){
+                    var contentH = 130 * scaleY; 
+                    var textH = 0;
+                    var gapTotal = 0;
+
+                    if(this.showTitle) {
+                        textH += this.titleHeight;
+                        gapTotal += this.titleImgGap; 
+                    }
+                    if(this.showSubTitle) {
+                        textH += this.subTitleHeight;
+                        if(this.showTitle) gapTotal += this.textLineGap; 
+                    }
+                    
+                    currentItemH = (this.basePadding * 2) + (this.imgPadding * 2) + contentH + textH + gapTotal;
+                } else {
+                    currentItemH = this.itemHeight;
+                }
+
+                var availW = rc.width - this.viewPadding.left - this.viewPadding.right - this.scrollBarWidth;
+                var cols = ..math.floor(availW / this.itemWidth);
+                if(cols < 1) cols = 1;
+
+                var spacing = (cols > 1) ? (availW - (cols * this.itemWidth)) / (cols - 1) : 0;
+
+                var offsetX = 0;
+                if(cols == 1){
+                    offsetX = (availW - this.itemWidth) / 2;
+                }
+
+                var rows = ..math.ceil(#this.listData / cols);
+                var totalHeight = rows * currentItemH + this.viewPadding.top + this.viewPadding.bottom;
+
+                return cols, spacing, totalHeight, rc.height, offsetX, currentItemH;
+            };
+
+         	// 关键函数：平滑滚动到目标item
+        	var startSmoothScroll = function(target){
+            	this.targetScrollPos = target; //clampScroll(target);
+	
+            	if(scrollTimerId) this.clearInterval(scrollTimerId);
+	
+            	//通过 this.plus.setInterval 启动一个微型定时器，计算当前位置与目标位置的差值，实现平滑渐变效果。
+            	scrollTimerId = this.setInterval( 
+                	function(){
+                    	var diff = this.targetScrollPos - this.scrollPos;
+                    	if( ..math.abs(diff) < 1 ){
+                        	this.scrollPos = this.targetScrollPos;
+                        	this.redraw();
+                        	return false; // 停止定时器
+                    	}
+	
+                    	// 每次移动差值的 15%，实现减速效果
+                    	this.scrollPos = this.scrollPos + (diff * 0.15);
+                    	this.redraw();
+                	}, 16
+            	)
+            };
+            
+            // Plus 控件自绘事件
+            this.onDrawContent = function(graphics, rc){
+                var cols, spacing, totalH, viewH, offsetX, itemH = this.getLayoutInfo();
+                if(viewH <= 0) return; 
+
+                var needSb = totalH > viewH; 
+                var maxP = ..math.max(0, totalH - viewH);
+
+                graphics.setClipRect(rc.left, rc.top, rc.width, rc.height);
+
+                var brushHover = ..gdip.solidBrush(this.itemHoverBgColor);
+                var brushSelect = ..gdip.solidBrush(this.itemSelectBgColor);
+                var brushText = ..gdip.solidBrush(this.textColor);
+                var brushSub = ..gdip.solidBrush(this.subTextColor);
+
+                var mx, my = ..win.getMessagePos();
+                mx, my = ..win.toClient(this.hwnd, mx, my);
+				
+				var nowTick = ..time.tick(); // 获取当前毫秒时间戳
+                for(i=1; #this.listData){
+                    var col = (i-1) % cols;
+                    var row = ..math.floor((i-1) / cols);
+
+                    var x = this.viewPadding.left + offsetX + col * (this.itemWidth + spacing);
+                    var y = this.viewPadding.top + row * itemH - this.scrollPos;
+
+                    if(y + itemH < 0) continue;
+                    if(y > viewH) break;
+
+                    var itemRc = ..gdip.RECTF(x, y, this.itemWidth, itemH);
+
+                    // 1. 背景层
+                    if(i == this.selectedIndex){
+                        graphics.fillRectangle(brushSelect, itemRc);
+                    }
+                    elseif(this.enableHover && this.mouseOver){ 
+                        // 严格检查矩形
+                        if( mx >= itemRc.x && mx <= (itemRc.x + itemRc.width) 
+                            && my >= itemRc.y && my <= (itemRc.y + itemRc.height) ){
+                            graphics.fillRectangle(brushHover, itemRc);
+                        }
+                    }
+
+                    // 2. 内部元素布局计算
+                    var contentTop = y + this.basePadding;
+                    var contentBottom = y + itemH - this.basePadding;
+                    var contentH = contentBottom - contentTop;
+                    
+                    var imgY, imgH, textStartY;
+
+                    if(this.autoHeight){
+                        var tH = 0;
+                        var gaps = 0;
+                        if(this.showTitle) { tH += this.titleHeight; gaps += this.titleImgGap; }
+                        if(this.showSubTitle) { 
+                            tH += this.subTitleHeight; 
+                            if(this.showTitle) gaps += this.textLineGap; 
+                        }
+                        
+                        var availableForImg = contentH - (this.imgPadding * 2) - tH - gaps;
+                        imgH = availableForImg;
+                        if(imgH < 10 * scaleY) imgH = 10 * scaleY; 
+                        
+                        imgY = contentTop + this.imgPadding;
+                        textStartY = imgY + imgH + this.titleImgGap;
+
+                    } else {
+                        var neededTextH = 0;
+                        var neededGaps = 0;
+                        if(this.showTitle) { neededTextH += this.titleHeight; neededGaps += this.titleImgGap; }
+                        if(this.showSubTitle) { 
+                            neededTextH += this.subTitleHeight; 
+                            if(this.showTitle) neededGaps += this.textLineGap; 
+                        }
+                        
+                        var minImgH = 60 * scaleY;
+                        var availableForImg = contentH - (this.imgPadding * 2) - neededTextH - neededGaps;
+                        imgH = availableForImg;
+                        if(imgH < minImgH) imgH = minImgH; 
+                        
+                        var actualContentH = imgH + neededTextH + neededGaps + (this.imgPadding * 2);
+                        var offsetY = (contentH - actualContentH) / 2;
+                        if(offsetY < 0) offsetY = 0; 
+
+                        imgY = contentTop + this.imgPadding + offsetY;
+                        textStartY = imgY + imgH + this.titleImgGap;
+                    }
+
+                    // 绘制图片
+                    var imgX = x + this.imgPadding;
+                    var imgW = this.itemWidth - (this.imgPadding * 2);
+                    var imgRc = ..gdip.RECTF(imgX, imgY, imgW, imgH);
+                    
+                    if(this.listData[i].bmp){
+                        var thisData = this.listData[i];
+						var bmp = this.listData[i].bmp;
+						
+                        //如果是gif ，显示gif动画（**注意：#items中gif较多时，会让自绘变慢**）
+                        if(showAnimation && bmp.totalFrames>1){
+            				thisData.delays := bmp.getFrameDelays(); 
+            				thisData.curFrame  := 1; 
+            				thisData.lastTick  := nowTick; 
+            				
+            				// 获取当前帧应有的延迟（毫秒），若获取不到默认为 100厘秒
+       						var currentDelay = thisData.delays[thisData.curFrame] : 100;
+            				
+            				// 判断是否达到切帧时间点
+        					if( (nowTick - thisData.lastTick) >= currentDelay * 10 /*乘10转为毫秒*/){
+            					thisData.curFrame++;
+            					if(thisData.curFrame > bmp.totalFrames) thisData.curFrame = 1;
+            					thisData.lastTick = nowTick; // 更新该项的上一次播放时间
+        					}
+
+        					// 切换并绘制当前帧
+        					bmp.selectActiveFrame(thisData.curFrame);
+        				}  //if-gif 结束
+        				
+                    	//draw - image (scale)
+                    	graphics.drawImageScale(bmp,imgRc);
+
+                    	bmp=null;
+                    }
+
+                    // 绘制标题
+                    if(this.showTitle && this.listData[i].title){
+                        var titleRc = ..gdip.RECTF(x + 5, textStartY, this.itemWidth - 10, this.titleHeight);
+                        graphics.drawString(this.listData[i].title, fontTitle, titleRc, strFormat, brushText);
+                        textStartY += this.titleHeight + this.textLineGap; 
+                    }
+
+                    // 绘制副标题
+                    if(this.showSubTitle && this.listData[i].subTitle){
+                        var subRc = ..gdip.RECTF(x + 5, textStartY, this.itemWidth - 10, this.subTitleHeight);
+                        graphics.drawString(this.listData[i].subTitle, fontSub, subRc, strFormat, brushSub);
+                    }
+                }
+
+                // 绘制滚动条
+                if(needSb){
+                    var thH = ..math.max(30, (viewH / totalH) * viewH);
+                    var thY = (this.scrollPos / maxP) * (viewH - thH);
+                    var brushTrk = ..gdip.solidBrush(this.trackColor);
+                    var brushThb = ..gdip.solidBrush(this.thumbColor);
+                    graphics.fillRectangle(brushTrk, rc.right - this.scrollBarWidth, 0, this.scrollBarWidth, viewH);
+                    graphics.fillRectangle(brushThb, rc.right - this.scrollBarWidth + 2, thY, this.scrollBarWidth - 4, thH);
+                    brushTrk.delete(); brushThb.delete();
+                }
+                
+                brushHover.delete(); brushSelect.delete(); brushText.delete(); brushSub.delete();
+            };
+
+            this.setItemHeight = function(h){
+                this.itemHeight = h;
+                this.autoHeight = false;
+            };
+            
+            this.enableAutoHeight = function(){
+                this.autoHeight = true;
+            };
+
+            this.onMouseEnter = function(){ this.mouseOver = true; };
+            this.onMouseLeave = function(){ this.mouseOver = false; this.redraw(); };
+
+            this.onMouseMove = function(wParam, lParam){
+                var x, y = ..win.getMessagePos(lParam);
+                var cols, spacing, totalH, viewH, offsetX, itemH = this.getLayoutInfo();
+                var maxP = ..math.max(0, totalH - viewH);
+
+                // 处理滚动条拖拽 (滚动条区域优先)
+                if(totalH > viewH && x > this.width - this.scrollBarWidth){
+                    if(this.isDragging){
+                        var dy = y - this.dragStartY;
+                        this.targetScrollPos = ..math.max(0, ..math.min(maxP, this.dragStartPos + dy * (totalH / viewH)));
+                        this.scrollPos = this.targetScrollPos;
+                        return this.redraw();
+                    }
+                    // 如果在滚动条区域但不拖拽，不处理 Item 逻辑
+                    if(this.enableHover && this.mouseOver) this.redraw(); // 仅重绘以清除可能的 hover
+                    return; 
+                }
+
+                // 严格的 Hit Test
+                var hitIdx = -1;
+                
+                // 1. 估算行列
+                var col = ..math.floor((x - this.viewPadding.left - offsetX) / (this.itemWidth + spacing));
+                var row = ..math.floor((y + this.scrollPos - this.viewPadding.top) / itemH);
+
+                // 2. 初步范围检查
+                if(col >= 0 && col < cols && row >= 0){
+                    var idx = row * cols + col;
+                    // 3. 数据边界检查
+                    if(idx >= 0 && idx < #this.listData){
+                        // 4. 【关键】计算该 Item 的实际矩形
+                        var itemX = this.viewPadding.left + offsetX + col * (this.itemWidth + spacing);
+                        var itemY = this.viewPadding.top + row * itemH - this.scrollPos;
+                        
+                        // 5. 精确矩形包含测试 (排除 padding 和 spacing 区域)
+                        if(x >= itemX && x <= (itemX + this.itemWidth) &&
+                           y >= itemY && y <= (itemY + itemH)){
+                            hitIdx = idx;
+                        }
+                    }
+                }
+
+                // --- 根据 Hit Test 结果处理 Tooltip 和 Hover ---
+                if(hitIdx != -1){
+                    // 命中有效 Item
+                    if(this.lastTipIndex != hitIdx){
+                        var item = this.listData[hitIdx + 1];
+                        var g = ..gdip.graphics(this);
+                        var availTextW = this.itemWidth - 10;
+                        var tipText = "";
+                        
+                        if(this.showTitle && item.title){
+                            var sizeT = g.measureString(item.title, fontTitle, ..gdip.RECTF(), strFormat);
+                            if(sizeT.width > availTextW) tipText = item.title;
+                        }
+                        if(this.showSubTitle && item.subTitle){
+                            var sizeS = g.measureString(item.subTitle, fontSub, ..gdip.RECTF(), strFormat);
+                            if(sizeS.width > availTextW) tipText = (tipText ? tipText + '\r\n' : "") + item.subTitle;
+                        }
+
+                        if(#tipText){
+                            tooltip.addTool(this, tipText);
+                            tooltip.tracking = true; 
+                        } else {
+                            tooltip.addTool(this, "");
+                        }
+                        this.lastTipIndex = hitIdx;
+                        g.delete();
+                    }
+                } else {
+                    // 未命中任何 Item (包括点击在 padding/spacing 上)
+                    if(this.lastTipIndex != -1){
+                        tooltip.addTool(this, "");
+                        this.lastTipIndex = -1;
+                    }
+                }
+
+                if(this.enableHover && this.mouseOver) this.redraw();
+            };
+
+            this.handleClick = function(x,y,isRight){
+                var cols, spacing, totalH, viewH, offsetX, itemH = this.getLayoutInfo();
+
+                // 滚动条拖拽逻辑
+                if(!isRight && totalH > viewH && x > this.width - this.scrollBarWidth){
+                    this.isDragging = true;
+                    this.dragStartY = y;
+                    this.dragStartPos = this.scrollPos;
+                    this.capture = true;
+                    return;
+                }
+
+                // --- 严格的 Hit Test ---
+                var hitIdx = -1;
+                var col = ..math.floor((x - this.viewPadding.left - offsetX) / (this.itemWidth + spacing));
+                var row = ..math.floor((y + this.scrollPos - this.viewPadding.top) / itemH);
+
+                if(col >= 0 && col < cols && row >= 0){
+                    var idx = row * cols + col;
+                    if(idx >= 0 && idx < #this.listData){
+                        var itemX = this.viewPadding.left + offsetX + col * (this.itemWidth + spacing);
+                        var itemY = this.viewPadding.top + row * itemH - this.scrollPos;
+                        
+                        // 精确矩形测试
+                        if(x >= itemX && x <= (itemX + this.itemWidth) &&
+                           y >= itemY && y <= (itemY + itemH)){
+                            hitIdx = idx;
+                        }
+                    }
+                }
+
+                // 只有命中有效 Item 才触发事件
+                if(hitIdx != -1){
+                    this.selectedIndex = hitIdx + 1;
+                    this.redraw();
+                    if(isRight){
+                        if(this.onItemRightClick) this.onItemRightClick(hitIdx + 1);
+                    }else {
+                        if(this.onItemClick) this.onItemClick(hitIdx + 1);
+                    }
+                } else {
+                    // 点击空白处可取消选中 (可选行为，这里保持原逻辑：点击空白不取消，或者你可以添加 this.selectedIndex = -1)
+                    // 如果希望点击空白取消选中，解开下面这行注释：
+                    // this.selectedIndex = -1; this.redraw();
+                }
+            };
+
+            this.onMouseDown = function(wParam, lParam){
+                var x, y = ..win.getMessagePos(lParam);
+                this.handleClick(x, y, false);
+            };
+
+            this.wndproc = function(hwnd,message,wParam,lParam){
+                select(message) {
+                    case 0x0204/*_WM_RBUTTONDOWN*/{
+                        var x, y = ..win.getMessagePos(lParam);
+                        this.handleClick(x, y, true);
+                    }
+                    case 0x0203/*_WM_LBUTTONDBLCLK*/{
+                        var x, y = ..win.getMessagePos(lParam);
+                        var cols, spacing, _, _, offsetX, itemH = this.getLayoutInfo();
+                        
+                        var hitIdx = -1;
+                        var col = ..math.floor((x - this.viewPadding.left - offsetX) / (this.itemWidth + spacing));
+                        var row = ..math.floor((y + this.scrollPos - this.viewPadding.top) / itemH);
+
+                        if(col >= 0 && col < cols && row >= 0){
+                            var idx = row * cols + col;
+                            if(idx >= 0 && idx < #this.listData){
+                                var itemX = this.viewPadding.left + offsetX + col * (this.itemWidth + spacing);
+                                var itemY = this.viewPadding.top + row * itemH - this.scrollPos;
+                                if(x >= itemX && x <= (itemX + this.itemWidth) &&
+                                   y >= itemY && y <= (itemY + itemH)){
+                                    hitIdx = idx;
+                                }
+                            }
+                        }
+
+                        if(hitIdx != -1){
+                            if(this.onItemDoubleClick) this.onItemDoubleClick(hitIdx + 1);
+                        }
+                    }
+                    case 0x0005/*_WM_SIZE*/{
+                        var _, _, totalH, viewH = this.getLayoutInfo();
+                        var maxP = ..math.max(0, totalH - viewH);
+                        if(this.targetScrollPos > maxP) this.targetScrollPos = maxP;
+                        if(this.scrollPos > maxP) this.scrollPos = maxP;
+                        this.redraw();
+                    }
+                }
+            }
+
+            this.onMouseUp = function(){
+                this.isDragging = false;
+                this.capture = false;
+            };
+            
+        	// --- 鼠标中键滚动（滚动条） ---
+        	this.onMouseWheel = function(flags,delta,lParam){
+            	var stepLen = 60;  // 滚动步长
+            	var step = (delta > 0 ? stepLen : -stepLen); 
+            	
+				if(..math.abs(this.targetScrollPos - this.scrollPos) > 0.5){
+                	this.targetScrollPos = ..math.max(0, ..math.min(maxP:0, this.targetScrollPos - step));
+                }else{
+                	var _, _, totalH, viewH = this.getLayoutInfo();
+                	var maxP = ..math.max(0, totalH - viewH);
+               		this.targetScrollPos = ..math.max(0, ..math.min(maxP:0, this.targetScrollPos - step));
+                }
+                this.scrollPos = this.targetScrollPos;
+            	this.redraw(); 
+        	};
+            
+            this.ensureVisible = function(index){
+                if(index < 1 || index > #this.listData) return;
+
+                var cols, spacing, totalH, viewH, offsetX, itemH = this.getLayoutInfo();
+                var row = ..math.floor((index - 1) / cols);
+
+                // 计算该 Item 相对于控件顶部的绝对坐标（不计 scrollPos）
+                var itemTop = this.viewPadding.top + (row * itemH);
+                var itemBottom = itemTop + itemH;
+
+                var maxP = ..math.max(0, totalH - viewH);
+				var targetPos = 0;
+                // 目标项在当前滚动区域上方
+                if( itemTop < this.scrollPos + this.viewPadding.top ){
+                    // 滚动到该项刚好在顶部露出
+                    targetPos = ..math.max(0, itemTop - this.viewPadding.top);
+                }
+                // 目标项在当前滚动区域下方
+                elseif( itemBottom > (this.scrollPos + viewH - this.viewPadding.bottom) ){
+                    // 滚动到该项刚好在底部露出
+                    targetPos = ..math.min(maxP, itemBottom - viewH + this.viewPadding.bottom);
+                }
+
+                // 同步滚动到指定位置
+                startSmoothScroll(targetPos)
+                //或者: 定位到指定位置（没有滚动特效）
+                //this.scrollPos =targetPos;
+                //this.redraw();
+            };
+
+			// 定时执行，自动刷新控件
+            this.onAnimation = function(state,beginning,change,timestamp,duration){
+                var needRedraw = false;
+
+                // --- 1. 处理平滑滚动特效 ---
+                // 这里的 0.2 是平滑系数，越小越慢越丝滑
+                if( ..math.abs(this.targetScrollPos - this.scrollPos) > 0.5 ){
+                    this.scrollPos = this.scrollPos + (this.targetScrollPos - this.scrollPos) * 0.2;
+                    needRedraw = true;
+                } else {
+                    this.scrollPos = this.targetScrollPos;
+                }
+
+                // --- 2. 处理 GIF 动画逻辑 (保留你原有的逻辑) ---
+                if(showAnimation){
+                    // 这里由于绘图逻辑在 onDrawContent 里根据 nowTick 判断，
+                    // 只要这里返回 true 触发重绘，GIF 就会动起来。
+                    needRedraw = true; 
+                }
+
+                // 如果滚动结束且没有 GIF 动画，可以停止动画节省资源
+                if( !needRedraw && !showAnimation ){
+                    return false; // 停止动画
+                }
+
+                this.redraw();
+                return true; // 继续下一帧
+            }
+
+    		//  是否显示gif动画
+    		this.showGifAnimation = function(bool){
+        		if(!!bool == true) {
+            		//启动动画（每20ms更新一次）
+            		showAnimation = true;
+            		this.startAnimation(20); 
+        		}else{
+            		showAnimation = false;
+            		if(this.animationState) this.stopAnimation();
+        		}   
+    		}
+			
+			if(this.animationState) this.stopAnimation();
+            return this; 
+        };
+    }
+
+/**intellisense()
+win.ui.ctrl.plusView = 模拟资源管理器的流式布局视图 (增强版)
+win.ui.ctrl.plusView(.(winform,plus控件) = 初始化 plusView
+win.ui.ctrl.plusView() = !stdPlusView.
+!stdPlusView.listData = 数据列表\n每个元素为: {title="主标题"; subTitle="副标题"; bmp=gdipBitmap}
+!stdPlusView.selectedIndex = 当前选中项索引 (从 0 开始)
+!stdPlusView.itemWidth = 项目宽度
+!stdPlusView.itemHeight = 项目高度 (仅在 autoHeight=false 时生效)
+!stdPlusView.autoHeight = 是否启用自动高度模式 (默认 true)
+!stdPlusView.showTitle = 是否显示标题 (布尔值)
+!stdPlusView.showSubTitle = 是否显示副标题 (布尔值)
+!stdPlusView.titleImgGap = 图片与标题之间的垂直间隙
+!stdPlusView.setItemHeight(height) = 设置固定项目高度
+!stdPlusView.enableAutoHeight() = 恢复自动紧凑高度模式
+!stdPlusView.enableHover = 是否启用鼠标悬停背景色效果
+!stdPlusView.itemHoverBgColor = 鼠标悬停时的背景颜色
+!stdPlusView.itemSelectBgColor = 选中时的背景颜色
+!stdPlusView.textColor = 标题文本颜色
+!stdPlusView.subTextColor = 副标题文本颜色
+!stdPlusView.ensureVisible(index) = 确保指定的项目索引（从 1 开始）在视图中可见
+!stdPlusView.showGifAnimation(false) = 是否在聊天框中显示gif动画，参数为真时开启，默认不显示动画。
+!stdPlusView.onItemClick = @.onItemClick = function(index){ __/*左键点击*/ }
+!stdPlusView.onItemDoubleClick = @.onItemDoubleClick = function(index){ __/*左键双击*/ }
+!stdPlusView.onItemRightClick = @.onItemRightClick = function(index){ __/*右键点击*/ }
+!stdPlusView.viewPadding = 控件内边距表
+!stdPlusView.redraw() = 重绘控件
+end intellisense**/

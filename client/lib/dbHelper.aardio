@@ -1,0 +1,115 @@
+﻿import sqlite;
+class dbHelper{
+	ctor(username){
+		// 确保数据库目录存在
+        var dbDir = ..io.appData("/chatdata/"++ username ++"/");
+        ..fsys.createDir(dbDir);
+        
+		var dbPath = ..io.fullpath(dbDir++"message.db");     
+        var db = ..sqlite(dbPath);
+        
+        // 设置繁忙超时（初始化时设置一次即可）
+        db.busyTimeout(5000);
+        
+        if(!db.existsTable("messages")){
+            db.exec(
+                "CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    from_user TEXT NOT NULL,
+                    to_user TEXT NOT NULL,
+                    msgtype INTEGER DEFAULT 1,
+                    content TEXT NOT NULL,
+                    filename TEXT,
+                    filesize TEXT,
+                    timestamp TEXT NOT NULL
+                )"
+            );
+            // 创建复合索引提升查询性能
+            db.exec("CREATE INDEX idx_conversation ON messages(from_user, to_user, timestamp)");
+        }
+ 	
+		//添加一行【文本】消息
+		this.insertTextMessage = function(fromUser, toUser, msgtype = 1, content, timestamp){
+			db.exec("INSERT INTO messages (from_user, to_user, msgtype, content, filename, filesize, timestamp) 
+				VALUES (@from, @to, @msgtype, @content, '', '', @time)", {
+				from = fromUser;
+				to = toUser;
+				msgtype = msgtype;
+				content = content;
+				time = timestamp : tostring(..time.now());
+			});
+		};
+		
+		//添加一行【文件】消息
+		this.insertFileMessage = function(fromUser, toUser, msgtype = 2, filepath, filename, filesize, timestamp){
+			db.exec("INSERT INTO messages (from_user, to_user, msgtype, content, filename, filesize, timestamp) 
+				VALUES (@from, @to, @msgtype, @content, @filename, @filesize, @time)", {
+				from = fromUser;
+				to = toUser;
+				msgtype = msgtype;
+				content = filepath : filename : "";
+				filename = filename;
+				filesize = filesize;
+				time = timestamp : tostring(..time.now());
+			});
+		};
+		
+		// 获取最新的历史聊天记录（倒序取 Limit 条，再正序返回）
+		this.getHistory = function(userA, userB, limit = 100){
+			// 先查出最近的 N 条（DESC），再包裹一层查询将其正序（ASC）排好给 UI
+            var sql = "SELECT * FROM (
+                SELECT * FROM messages 
+                WHERE (from_user=@userA AND to_user=@userB) OR (from_user=@userB AND to_user=@userA) 
+                ORDER BY timestamp DESC LIMIT @limit
+            ) ORDER BY timestamp ASC";
+            
+			return db.getTable(sql, { userA = userA; userB = userB; limit = limit });
+		};    	
+		
+		// 获取最近7天的聊天记录
+		this.getRecentHistory = function(userA, userB, limit = 100){
+			var startTime = ..time.now().addday(-7).format("%Y-%m-%d %H:%M:%S");
+			return db.getTable("SELECT from_user, msgtype, content, timestamp, filename, filesize FROM messages 
+			WHERE ((from_user=@userA AND to_user=@userB) OR (from_user=@userB AND to_user=@userA)) 
+			AND timestamp >= @startTime ORDER BY timestamp ASC LIMIT @limit", 
+				{
+					userA = userA;
+					userB = userB;
+					startTime = startTime;
+					limit = limit;
+				}
+			);
+		};
+		
+		// 按每页100条记录使用 LIMIT 关键字 分页查询消息记录）
+		this.getHistoryByPage = function(userA, userB, page = 1, pageSize = 100){
+			var sql = "SELECT * FROM (
+				SELECT * FROM messages 
+				WHERE (from_user=@userA AND to_user=@userB) OR (from_user=@userB AND to_user=@userA) 
+				ORDER BY timestamp DESC, id DESC LIMIT @limit OFFSET @offset
+			) ORDER BY timestamp ASC, id ASC";
+			
+			return db.getTable(sql, { 
+				userA = userA; 
+				userB = userB; 
+				limit = pageSize; 
+				offset = (page - 1) * pageSize; 
+			});
+		};
+
+		// 获取总消息数用于分页展示
+		this.getHistoryCount = function(userA, userB){
+			return db.stepQuery("SELECT COUNT(*) AS counts FROM messages 
+				WHERE (from_user=@userA AND to_user=@userB) OR (from_user=@userB AND to_user=@userA)", 
+				{ userA = userA; userB = userB });
+		};
+		
+        // 显式关闭数据库的方法
+        this.close = function(){
+            if(db) db.close();
+            db = null;
+        };
+        
+	};  /*ctor End*/
+} /*class End*/
+

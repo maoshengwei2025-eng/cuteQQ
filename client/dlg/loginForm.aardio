@@ -1,0 +1,162 @@
+import win.ui;
+import fonts.fontAwesome;
+import gdip.webp;
+import win.ui.simpleWindow;
+import thread.command;
+import plusStyle;
+/*DSG{{*/
+var winform = win.form(text="cuteQQ - 登录：";right=367;bottom=471;border="dialog frame";max=false)
+winform.add(
+btnLogin={cls="plus";text="登 录";left=200;top=384;right=312;bottom=424;bgcolor=0x8FB2B0;default=1;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=20}};notify=1;z=5};
+btnRegister={cls="plus";text="注 册";left=56;top=384;right=168;bottom=424;bgcolor=0x8FB2B0;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=20}};notify=1;z=2};
+btnSetting={cls="plus";text='\uF013';left=337;top=443;right=359;bottom=464;anchors={right=1;bottom=1};color=0x800000;font=LOGFONT(h=-14;name='FontAwesome');notify=1;z=6};
+plusAvatar={cls="plus";left=120;top=80;right=248;bottom=208;repeat="scale";z=1};
+txtPass={cls="plus";left=80;top=312;right=288;bottom=344;align="left";anchors={left=1;top=1;right=1};bgcolor=0xFFFFFF;border={color=0x808080;radius=20;width=1};editable=1;font=LOGFONT(h=-13);password=1;tabstop=1;textPadding={left=45;top=6};z=4};
+txtUser={cls="plus";left=80;top=256;right=288;bottom=288;align="left";anchors={left=1;top=1;right=1};bgcolor=0xFFFFFF;border={color=0x808080;radius=20;width=1};editable="edit";font=LOGFONT(h=-13);tabstop=1;textPadding={left=45;top=6;right=10;bottom=4};z=3}
+)
+/*}}*/
+
+win.ui.simpleWindow(winform);
+
+/*样式{{*/
+winform.btnRegister.skin(plusStyle.buttonLayuiDefault);
+winform.btnLogin.skin(plusStyle.buttonLayuiBlue);
+
+//改变获得焦点后，边框的颜色
+winform.txtUser.skin({
+    border={
+        default={
+            color=0x808080;
+            radius=20;
+            width=1;
+        };
+        focus={
+            color=0xFF577DC9;
+            radius=20;
+            width=1;                
+        }
+    }
+})
+
+winform.txtPass.skin({
+    border={
+        default={
+            color=0x808080;
+            radius=20;
+            width=1;
+        };
+        focus={
+            color=0xFF577DC9;
+            radius=20;
+            width=1;                
+        }
+    }
+})
+
+winform.btnSetting.skin({
+	color={
+		active=0xFF00FF00;
+		default=0xFF000080;
+		disabled=0xFF6D6D6D;
+		hover=0xFFFF0000		
+	}
+})
+
+//美化plus制作的用户名文本框 （在前面加一个iconText）
+var icon1 = winform.txtUser.addCtrl(  //***要点：添加子控件
+    cls="plus"; align="left";
+    left=11;top=2;right=43;bottom=30;dl=1;dt=1;
+    bgcolor=0xFFFFFF;color=0xC0000000;
+    iconText='\uF007';textPadding={left=0;top=0};  /*一般只需修改iconText属性*/
+    iconStyle={align="left";font=LOGFONT(h=-14;name='FontAwesome');padding={left=10}};  
+)
+//winform.txtUser.editBox.setCueBannerText("请输入你的昵称...");
+
+//美化plus制作的密码文本框 （在前面加一个iconText，这个图标可点击）
+var icon2 = winform.txtPass.addCtrl(
+    cls="plus"; align="left";
+    left=11;top=2;right=43;bottom=30;dl=1;dt=1;
+    bgcolor=0xFFFFFF;
+    iconText='\uF023';textPadding={left=0;top=0};
+    iconStyle={align="left";font=LOGFONT(h=-14;name='FontAwesome');padding={left=10}};  
+)
+
+// 自绘LOGO或最后一次登陆头像
+winform.plusAvatar.onDrawBackground = function(graphics,rc,backgroundColor,foregroundColor){
+	var bmp = gdip.bitmap( gdip.webp("\res\avatars\000.webp") );
+	var path = ..gdip.path();
+    var borderColor = 0xFFBFBFBF;
+    var borderPen = ..gdip.pen(borderColor, 4); // 默认颜色 0xFFBFBFBF，宽度 1
+    path.addEllipse(rc.inflate(-4,-4).xywh());
+    graphics.drawPath(borderPen, path);
+    graphics.setClipPath(path); 
+    graphics.clear(0xFFFFFFFF)
+    graphics.drawImageScale(bmp, rc.inflate(-5,-5));
+    path.delete();  
+}
+/*}}*/
+
+// 监听消息
+var listener = thread.command();
+listener.onWsMessage = function(msg){
+	select(msg.msgType) {
+		case "sys_connected" {
+            winform.btnLogin.disabledText = null;
+            // 连接成功了，自动重试发送登录请求
+            var name = winform.txtUser.text;
+            var pwd = winform.txtPass.text;
+            if(#name && #pwd) {
+                var msg = { //延迟登录
+    				msgType="login";
+    				data={username=name; password=pwd}
+    			};
+	    		wsHelper.send(msg);  
+            }
+        }
+		case "login_result" {
+			if(msg.success){  
+            	// 触发主程序的成功回调（附带密码仅做内存传递，供断线自动重连使用，不落盘不持久化）
+            	msg.data.password = winform.txtPass.text;
+	    		if(winform.onLoginSuccess) winform.onLoginSuccess(msg.data);
+        	} else {
+            	winform.msgbox(msg.message, "登录失败", "warn");
+        	}	
+		}
+	}
+}
+
+// 登录按钮
+winform.btnLogin.oncommand = function(id,event){
+	var name = winform.txtUser.text;
+    var pwd = winform.txtPass.text;  // 明文发送密码
+    if(!#name || !#pwd) return winform.msgbox("请输入用户名和密码", "提示","warn");
+    
+    import wsHelper;
+    // 如果已经连接，直接登录
+    if( wsHelper.isConnected() ){
+        var msg = {
+    		msgType="login";
+    		data={username=name; password=pwd}
+    	};
+	    wsHelper.send(msg);  //wsHelper会序列化消息
+    }else {
+        // 如果未连接，先连接。连接成功后会触发 onWsMessage 里的 sys_connected
+        // 我们可以在这里临时记录一下用户的登录意图，或者简单提示“正在连接...”
+        winform.btnLogin.disabledText = "正在连接...";
+        wsHelper.connect();
+    }
+}
+
+//拦截密码输入框回车键
+winform.txtPass.editBox.onOk = function(){
+    winform.btnLogin.oncommand();
+}
+
+
+//设置服务器url
+winform.btnSetting.oncommand = function(id,event){
+	var frmChild = winform.loadForm("\dlg\setUrlForm.aardio");
+	frmChild.doModal();
+}
+
+return winform;

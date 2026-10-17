@@ -1,0 +1,54 @@
+/**程序单例运行
+import process.mutex;
+var mutex = process.mutex("cuteQQ-20260526") 
+if( mutex.conflict ){ //程序进程已存在
+	//程序已运行
+	return;
+} 
+**/
+
+import win.ui;
+// 1. 预载登录窗体
+var loginForm = win.loadForm("/dlg/loginForm.aardio");
+loginForm.txtUser.editBox.setFocus();
+
+// 2. 登录成功的回调
+loginForm.onLoginSuccess = function(userData){
+    loginForm.hide = true;
+	
+    // 加载并显示主界面
+	var clientForm = win.loadForm("/dlg/clientForm.aardio");
+	clientForm.show();
+
+    // 主界面接收用户信息
+    clientForm.initUser(userData); 
+    
+	loginForm.close();
+}
+
+// 注册按钮
+loginForm.btnRegister.oncommand = function(id,event){
+	loginForm.hide = true;
+	
+	var registerForm = win.loadForm("\dlg\registerForm.aardio");
+	registerForm.show();
+	
+	// 传递用户信息
+	registerForm.onRegidterSuccess = function(userData){
+    	loginForm.txtUser.text = registerForm.txtName.text;
+		loginForm.txtPass.text = "";
+		registerForm.close();
+	}
+
+	registerForm.onClose = function(hwnd,message,wParam,lParam){
+    	loginForm.hide = false; 
+    	win.setForeground(loginForm.hwnd); 
+    }
+    
+    loginForm.onClose = function(hwnd,message,wParam,lParam){
+        if(registerForm) registerForm.close();
+    }
+}
+
+loginForm.show();
+win.loopMessage();

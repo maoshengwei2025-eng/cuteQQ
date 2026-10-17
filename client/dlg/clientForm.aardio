@@ -1,0 +1,879 @@
+import win.ui;
+import win.ui.menu;
+import fonts.fontAwesome;
+import userList;
+import gdip.webp;
+import dbHelper;
+import wsHelper;
+import thread.command;
+import fsys;
+import dockEdge;
+import trayIcon;
+import raw.pack;
+import crypt;
+/*DSG{{*/
+var winform = win.form(text="cuteQQ";right=263;bottom=545;clipch=1;max=false)
+winform.add(
+btnMore={cls="plus";text='\uF0C9';left=232;top=22;right=254;bottom=43;anchors={top=1;right=1};color=0x800000;font=LOGFONT(h=-14;name='FontAwesome');notify=1;z=5};
+curUserName={cls="static";text="Static";left=64;top=14;right=248;bottom=38;anchors={left=1;top=1};center=1;font=LOGFONT(h=-14;name='微软雅黑';weight=700);transparent=1;z=2};
+curUserSign={cls="static";text="Static";left=64;top=34;right=248;bottom=53;anchors={left=1;top=1;right=1};center=1;color=0xA4A0A0;font=LOGFONT(weight=700);transparent=1;z=4};
+plusUserAvatar={cls="plus";left=8;top=6;right=56;bottom=54;anchors={left=1;top=1};clipch=1;z=1};
+plusUserList={cls="plus";left=8;top=62;right=256;bottom=534;anchors={left=1;top=1;right=1;bottom=1};clipch=1;edge=1;z=3}
+)
+/*}}*/
+
+dockEdge(winform); // 让窗体吸附屏幕边缘
+
+var tray = trayIcon(winform);	//托盘图标
+tray.setMenu(
+    {
+           { "显示窗体";  function(id){  tray.restore()} };
+           { /*分隔线*/ };
+           { "退出程序"; function(id){  winform.close()} };
+    }
+);
+
+// 初始化好友列表
+var friendList  = userList(winform.plusUserList);
+friendList.itemHeight = 60;  // 建议数值>60
+friendList.fontSizeName = 11;
+friendList.colorHover = 0xFFE3FCFF;		// 悬停颜色
+friendList.colorSelect = 0xFFD3F2FF;	// 选中颜色 0xFFD3F2FF
+friendList.jumpAmplitude = 3;			//头像摆动幅度
+// 数据源: friendList.items = {name, sign, avatar, status, unread}
+
+/*样式{{*/
+winform.btnMore.skin({
+	color={
+		active=0xFF00FF00;
+		default=0xFF000080;
+		disabled=0xFF6D6D6D;
+		hover=0xFFFF0000		
+	}
+})
+
+// 自绘当前用户头像
+winform.plusUserAvatar.onDrawBackground = function(graphics,rc,backgroundColor,foregroundColor){	
+	if(!winform.curAvatarId) return;
+	var bmp = gdip.bitmap( gdip.webp("\res\avatars\" ++ winform.curAvatarId) );
+	var path = ..gdip.path();
+    var borderPen = ..gdip.pen(0xFFBFBFBF, 4); 
+    //path.addEllipse(rc.inflate(-4,-4).xywh()); //圆形轮廓
+    path.addRoundRect(rc.inflate(-4,-4),5);
+    graphics.drawPath(borderPen, path);
+    graphics.setClipPath(path); 
+    graphics.clear(0xFFFFFFFF)
+    graphics.drawImageScale(bmp, rc);
+    path.delete();  bmp.delete();  borderPen.delete()
+}
+
+// 优化界面
+winform.disableDragFullWindow = true;
+/*}}*/
+
+/*属性{{*/
+//消息数据库
+var db = null;
+// 窗口对象映射表
+var chatWindows = {}; 
+//用户名映射表 (用户名→index)
+var userNamelist = {};
+//用户属性(unread+lastMsg+isJump)缓存表
+var userTempState ={};
+//系统消息缓存表
+var sysMessages = {};
+//待处理系统消息提示队列：add/remove 好友的异步通知，等 friend_list 返回后统一弹出
+var pendingSysNotices = {};
+//存放数据的工作目录
+var workFolder = "";
+var autoExit = false;
+// 托盘图标闪烁对应的好友（双击托盘时打开其聊天窗口）
+var twinkleFriend = null;
+/*}}*/
+
+/*监听大文件的多线程{{*/
+// 创建后台大文件写入服务
+thread.command.fileWorker = function(workFolder){
+	import win;
+    import thread.command;
+    import raw.pack;
+    
+    var friendFiles = {}; // 在线程内部维护句柄，不干扰 UI
+    var listener = thread.command();
+
+	listener.exitThread = function(){
+    	win.quitMessage(); // 退出当前线程的消息循环
+	}
+    // 监听来自界面线程的任务转发
+    listener.processFileData = function(data, fin){
+        if( !data ) return;
+
+        // 1. 第一帧：初始化文件信息
+        if( data.type == 2 ){
+			if(!data.data || #data.data < 128) return; // 基础检查
+			var from, to, filename, filesize, timestamp = raw.pack.unpack("<128s128s256sI20s", data.data);
+			from = string.str(from);
+			filename = string.str(filename);
+			
+            //保存路径加“时间戳+随机数”前缀：防止同月同名文件互相覆盖（数据丢失隐患）
+            var fileRelativePath = "files\" ++ ..time().format("%Y%m") ++ "\" ++ ..time().format("%Y%m%d%H%M%S") ++ "_" ++ tostring(math.random(100000,999999)) ++ "_" ++ filename;
+            var savePath = workFolder ++ fileRelativePath;
+
+            // 确保目录存在
+            ..io.createDir(..io.splitpath(savePath).dir);
+
+            friendFiles[from] = {
+                from = from;
+                to = string.str(to);
+                savePath = savePath;
+                file = ..io.file(savePath, "wb");
+                filename = filename;
+                totalSize = filesize;
+                receivedSize = 0;
+                timestamp = string.str(timestamp);
+                lastPercent = -1 //用于百分比回调节流
+            }
+            return;
+        }
+
+        // 2. 数据帧：写入磁盘
+        // 从原始数据中提取发送者（前128字节）
+        var fromName = string.str(raw.slice(data.data, 1, 128));
+        var cache = friendFiles[fromName];
+		
+		// 如果没有 cache，说明没收到初始化包，直接跳过处理，防止崩溃
+        if(!cache) return; 
+        if(cache && cache.file){
+            var fileData = raw.slice(data.data, 129);
+            if(#fileData > 0){
+                cache.file.write(fileData);
+                cache.receivedSize += #fileData;
+				
+				//百分比回调节流
+				var currentPercent = ..math.floor( (cache.receivedSize / cache.totalSize) * 100 );	// 计算当前百分比
+				
+				if( currentPercent > cache.lastPercent || cache.receivedSize == cache.totalSize ){
+					// 异步通知界面更新进度条
+                	if( thread.command.onFileProgress ) thread.command.onFileProgress(cache.from, cache.filename, cache.totalSize, cache.receivedSize);
+            		cache.lastPercent = currentPercent; // 更新记录
+            	}
+            }
+        }
+
+        // 3. 最后一帧：收尾
+        if(fin == 1 && cache){
+            cache.file.close();
+
+            // 异步通知界面文件已完成，交由 UI 处理数据库插入和气泡显示
+            if( thread.command.onFileComplete ) {
+            	thread.command.onFileComplete( cache.from, cache.filename, cache.totalSize, cache.savePath, cache.timestamp
+            	); 
+            }
+            friendFiles[fromName] = null;
+        }
+    }
+    
+    // 启动消息循环，让线程停在这里监听命令而不退出
+    win.loopMessage(); 
+}
+/*}}*/
+
+/*自定义函数{{*/
+// 窗体绑定登录账户的信息
+winform.initUser = function(userData, isRefreshUserList=true){
+	// 存放数据的工作目录
+	workFolder = io.appData("/chatdata/"++ userData.userName ++"/");
+	workPath = ..io.exist(workFolder);
+	if(!workPath) workPath = ..fsys.createDir(workFolder);
+
+
+	winform.curUser = userData.userName;
+    winform.curAvatarId = userData.userAvatarId;
+    winform.curSign = userData.userSign:"";
+    winform.curPwd = userData[["password"]] : null; //仅存内存，用于断线自动重连，不落盘
+    
+    winform.curUserName.text = winform.curUser;
+    winform.curUserSign.text = winform.curSign;
+    winform.plusUserAvatar.redraw();
+    
+    if(!isRefreshUserList) return;  //不刷新用户列表
+    
+    db= dbHelper(winform.curUser); // 实例化数据库
+    
+    // 启动监听接收大文件的后台线程（传入工作目录）
+	thread.create(thread.command.fileWorker, workFolder);
+
+	
+	//向服务器获取好友列表
+	if( wsHelper.connect() ){
+		wsHelper.send({msgType="get_friends"; data={username=winform.curUser}});
+	}
+	
+	tray.setTip(winform.curUser);
+}
+
+// 更新好友列表
+var updateFriendList = function(friends){
+	var data = {};
+    for i,v in table.eachIndex(friends){
+        table.push(data,
+        	{name = v.name; avatar = v.avatarId; sign = v.sign; status = (v.online?"online":"offline"); unread = 0}
+        )
+        //让用户名和userList中的item.index对应(+1是因为顶端有一个"系统消息")
+    	userNamelist[v.name] = i+1; 
+    }
+    //顶部加一个【系统消息】
+    table.insert(data,
+    	{name="系统消息"; avatar=gdip.bitmap("\res\notice.jpg"); 
+    	sign="欢迎使用 cuteQQ !"; status="online"; unread=0}
+    );
+    userNamelist["system"] = 1; 
+    
+    friendList.setData(data);
+    friendList.refresh();
+}
+
+// 统一处理“收到消息”（文本/文件）：更新未读状态、最近消息、头像摆动、托盘闪烁。
+// 采用“先写缓存、再更新 UI”的异步友好模式：
+//   1. 先写 userTempState 缓存 —— 即使好友列表尚未加载（如离线消息先于 friend_list 到达），
+//      也能在后续 friend_list 到达时恢复未读状态；
+//   2. 若列表项已存在则立即更新 UI（红点、副标题、摆动、托盘闪烁）。
+// 该函数替代原先的 waitFriendList 忙等 + 消息泵重入模式，彻底消除消息处理重入风险。
+var notifyFriendMessage = function(from, lastMsg){
+    // 1. 先写缓存（item 为 null 时也写入，供 friend_list 到达时恢复）
+    userTempState[from] := {};
+    userTempState[from].unread = 1;
+    userTempState[from].lastMsg = lastMsg;
+    userTempState[from].isJump = true;
+
+    // 2. 若列表项已存在，立即更新 UI
+    var idx = userNamelist[from];
+    var item = friendList.items[[idx]];
+    if(item){
+        item.unread = 1;
+        item.lastMsg = lastMsg;
+        friendList.refresh();
+        friendList.setJump(idx, true);
+
+        // 托盘图标闪烁
+        var imgpath = "/res/avatars/" ++ item.avatar;
+        if(imgpath){
+            var bmpAvatar = gdip.bitmap( gdip.webp(imgpath) );
+            var hIcon = bmpAvatar.copyHandle("icon");
+            tray.icon = hIcon; hIcon = null;
+            bmpAvatar.delete();
+        }
+        tray.twinkle(true);
+        twinkleFriend = from;
+    }
+}
+
+var isImageFile = function(path){
+    if(!path) return false;
+
+    var pathInfo = ..io.splitpath(path);
+    var ext = pathInfo.ext;
+
+    if(!ext) return false;
+    ext = ..string.lower(ext);
+
+    var imageExts = {
+        ".jpg"; ".jpeg"; ".png"; ".gif"; ".bmp"; ".ico"; ".tif"; ".tiff"; ".webp"
+    };
+
+    return !!..table.find(imageExts, ext);
+};
+
+var playEffectSound = function(wav){
+    //使用 fsys.media 在多线程中播放声音。
+    ..thread.invoke(
+        function(wavpath){
+            import ..fsys.media;
+            var media = ..fsys.media("\res\wav\" ++ wavpath);
+            if(media){
+                media.play();
+                ..thread.delay(2000); 
+            }
+        }, wav
+    )
+};
+/*}}*/
+
+/*监听消息{{*/
+var listener = thread.command();
+
+// 监听后台线程的进度更新
+listener.onFileProgress = function(from, filename, totalSize, receivedSize){
+    if(chatWindows[[from]]){
+        if(chatWindows[[from]].onRecvData){
+            chatWindows[[from]].onRecvData(filename, totalSize, receivedSize);
+        }
+    }
+}
+
+// 监听后台线程的文件完成通知
+listener.onFileComplete = function(from, filename, totalSize, savePath, timestamp ){
+    var sizeString = math.size64(totalSize).format();
+    playEffectSound("msg.mp3");
+
+    if(chatWindows[[from]]){
+        // 更新窗口标题和显示消息
+        chatWindows[from].text = chatWindows[from].originalTitle;
+        
+        var data = {
+        	from = from;
+        	content = savePath;
+        	msgtype = 2; // file
+        	timestamp = timestamp;
+        	filename = filename;
+        	filesize = sizeString;
+    	};
+        chatWindows[from].showFriendMsg(data);
+    } else {
+        // 更新好友列表状态（统一处理：写缓存 + 更新 UI + 托盘闪烁）
+        notifyFriendMessage(from, "收到{ 文件 }");
+    }
+	
+    // 存入本地数据库（注销后 db 已关闭，判空防崩溃）
+    if(db) db.insertFileMessage(from, winform.curUser, 2, savePath, filename, sizeString, timestamp);
+}
+
+//监听websocket服务器消息
+listener.onWsMessage = function(msg){
+	select(msg.msgType){
+		case "friend_list" {
+			//更新本地的好友列表
+        	updateFriendList(msg.data);	
+        	
+        	//恢复其它用户的unread 和 lastmsg
+        	for(k,v in friendList.items){
+        		if(userTempState[[v.name]]){
+        			v.unread  = userTempState[[v.name]].unread;
+        			v.lastMsg = userTempState[[v.name]].lastMsg;
+        			if(!!userTempState[[v.name]].isJump) friendList.setJump(k,true);	//头像摆动
+        		}
+        	}
+
+        	// 弹出待处理系统消息提示（add/remove 好友的异步通知）
+        	// 替代原先 waitFriendList 忙等：add/remove_me_result 先入队，待 friend_list 返回后统一提示
+        	if(#pendingSysNotices > 0){
+        		for(i=1; #pendingSysNotices; 1){
+        			table.push(sysMessages, {
+        				timestamp=time.format("%Y-%m-%d %H:%M:%S");
+        				msg=pendingSysNotices[i]
+        			});
+        		}
+        		if(friendList.items[[1]]) friendList.items[[1]].sign = pendingSysNotices[#pendingSysNotices];
+        		friendList.refresh();
+        		pendingSysNotices = {};
+        	}
+		}
+		case "modify_Attr_result" {  //**可以多个窗口接收同一个消息
+			if(msg.success){
+				// 关闭所有的聊天窗口，以便下次打开时更新头像、图标等
+				for(index, frm in chatWindows){
+        			if(win.isWindow(frm[["hwnd"]])) frm.close();  // ？没有考虑正在发送接收文件的窗体
+    			}
+    			winform.initUser(msg.data, false) //更改当前用户信息（@2=false 表示不刷新用户列表）
+			}
+		}
+		case "friend_online"{
+			var txt = "";
+			if(msg.online){
+				playEffectSound("knock.mp3");	//播放声音
+				txt = "用户 [" ++ msg.friendname ++ " ] 上线了";
+			}else{
+				playEffectSound("gone.mp3");
+				txt = "用户 [" ++ msg.friendname ++ " ] 下线了";
+			}
+			table.push(sysMessages, {
+				timestamp=time.format("%Y-%m-%d %H:%M:%S");
+				msg=txt
+			});
+			if(friendList.items[[1]]) friendList.items[[1]].sign = txt;
+				
+			var idx = userNamelist[msg.friendname];
+			var item = friendList.items[[idx]];
+			if(item) item.status = msg.online ? "online":"offline"; //是否灰显
+			friendList.refresh();
+		}
+		case "add_me_result"{
+			playEffectSound("keke.mp3");
+			userNamelist = {};
+			
+			// 暂存系统消息提示，待 friend_list 返回后统一处理（异步事件驱动，无忙等）
+			table.push(pendingSysNotices, "用户 [" ++ msg.friendname ++ "] 添加你为好友");
+			
+			//重新获取好友列表
+			wsHelper.send({msgType="get_friends"; data={username=winform.curUser}});
+		}
+		case "remove_me_result"{
+			playEffectSound("keke.mp3");
+			userNamelist = {};
+			
+			// 暂存系统消息提示，待 friend_list 返回后统一处理（异步事件驱动，无忙等）
+			table.push(pendingSysNotices, "用户 [" ++ msg.friendname ++ "] 和你解除了好友关系");
+			
+			//重新获取好友列表
+			wsHelper.send({msgType="get_friends"; data={username=winform.curUser}});
+		}
+		case "message_online" {
+			playEffectSound("msg.mp3");
+			//如果好友聊天窗口打开
+			if(chatWindows[[msg.from]]){
+				var data = {
+					from=msg.from; content=msg.content, msgtype=1/*text*/, 
+					timestamp=msg.timestamp, filename="", filesize=""
+				};
+				// 显示在聊天窗口中
+				chatWindows[msg.from].showFriendMsg(data);
+		}else{
+			if(friendList.items[[1]]) friendList.items[[1]].sign = "用户 [" ++ msg.from ++ "] 发来新消息";
+			notifyFriendMessage(msg.from, msg.content);
+		}
+			//存入本地数据库（注销后 db 已关闭，判空防崩溃）
+			if(db) db.insertTextMessage(msg.from,msg.to, 1/*text*/,msg.content,msg.timestamp);
+		}
+		case "message_offline" {
+			//***注意：这个可能在"friend_list"前（=userList还未初始化好）就收到离线消息 ***
+			// 不再忙等 waitFriendList：notifyFriendMessage 会先写 userTempState 缓存，
+			// 待 friend_list 到达时自动恢复未读状态
+			
+			if(!chatWindows[[msg.from]]){
+				if(friendList.items[[1]]) friendList.items[[1]].sign = "用户 [" ++ msg.from ++ "] 发来离线消息";
+				notifyFriendMessage(msg.from, msg.content);
+			} else{ //如果好友聊天窗口打开 (极低可能发生)
+				var data = {
+					from=msg.from;
+					content=msg.content;
+					msgtype=1; timestamp=msg.timestamp;
+					filename="";  filesize=""
+				};
+				// 显示在聊天窗口中
+				chatWindows[msg.from].showFriendMsg(data);
+			}
+			//存入本地数据库（注销后 db 已关闭，判空防崩溃）
+			if(db) db.insertTextMessage(msg.from,msg.to, 1/*text*/,msg.content,msg.timestamp);
+		}
+		case "file", "file_offline" {
+			//播放声音
+			playEffectSound("msg.mp3");
+			
+			var filesize =  tonumber(msg.filesize)
+        	var sizeString =  math.size64(filesize).format();
+        	//保存路径加“时间戳+随机数”前缀：防止同月同名文件互相覆盖（数据丢失隐患）
+        	var fileRelativePath = "files\" ++ ..time().format("%Y%m") ++ "\" ++ ..time().format("%Y%m%d%H%M%S") ++ "_" ++ ..math.random(100000,999999) ++ "_" ++  msg.filename;
+        	var savePath =  workFolder ++ fileRelativePath; 
+            var bin = crypt.decodeBin(msg.data);
+            if(!bin){ //解码失败保护，防止写入空数据/异常
+            	table.push(sysMessages, {
+					timestamp=time.format("%Y-%m-%d %H:%M:%S");
+					msg="【ERR】文件数据解码失败：" ++ (msg.filename : "")
+				});
+            	return; 
+            }
+            string.save(savePath, bin); // 保存文件
+            
+        	// 显示在聊天窗口中
+        	if(chatWindows[[msg.from]]){
+        	    var data = {
+					from=msg.from;
+					content=savePath;
+					msgtype = 2;
+					timestamp=msg.timestamp;
+					filename = msg.filename;
+					filesize = sizeString;
+				};
+				// 显示在聊天窗口中
+				chatWindows[msg.from].showFriendMsg(data);
+		}else{
+			var text = "";
+			if(isImageFile(msg.filename)){ text = "{ 图片 }"}
+			else{	 text = "{ 文件 }"}
+			
+			if(friendList.items[1]) friendList.items[1].sign = "用户 [" ++ msg.from ++ "] 发来" ++ text;
+			// 统一处理：写缓存 + 更新 UI + 托盘闪烁（不再忙等 waitFriendList）
+			notifyFriendMessage(msg.from, "收到 " ++ text);
+		}
+        	//存入本地数据库（注销后 db 已关闭，判空防崩溃）
+        	if(db) db.insertFileMessage(msg.from,msg.to, 2/*file*/,savePath, msg.filename, sizeString,msg.timestamp);
+		}
+		case "recv_big_file"{
+			if( !msg.data ) return;
+			// 转发给后台线程，不占用界面线程 CPU 和 I/O
+    		thread.command.processFileData(msg.data, msg.data.fin);
+		}
+		case "system_notice"{
+			//服务器广播消息
+			playEffectSound("keke.mp3");
+			//屏幕右下角弹出"系统消息"窗口
+			/*DSG{{*/
+			..thread.invoke(
+        		function(content){
+					import win.ui;
+					var popForm = win.form(text="aardio form";right=337;bottom=197;bgcolor=0xE9FFFF;border="none";exmode="toolwindow")
+					popForm.add(
+					bk={cls="bk";left=0;top=0;right=342;bottom=27;anchors={left=1;top=1;right=1};bgcolor=0xC09D00;z=1};
+					lblCountdown={cls="static";text="(10)";left=298;top=6;right=330;bottom=21;align="right";anchors={top=1;right=1};color=0x00FFFF;transparent=1;z=4};
+					lblTitle={cls="static";text="【系统消息】-  cuteQQ";left=3;top=4;right=168;bottom=32;anchors={left=1;top=1};color=0xFFFFFF;font=LOGFONT(h=-14;name='微软雅黑';weight=700);transparent=1;z=2};
+					lblcontent={cls="static";text="111";left=16;top=48;right=326;bottom=182;anchors={left=1;top=1;right=1;bottom=1};font=LOGFONT(h=-14);transparent=1;z=3}
+					)
+					import win.util.popup;  
+					pop = win.util.popup(popForm,,false,4);
+					pop.countdown=function(remaintime){
+    					popForm.lblCountdown.text = "(" + remaintime  + ")"
+    					if(!remaintime){ 
+        					win.delay(200)
+        					popForm.close();
+    					}
+					}
+					popForm.lblcontent.text = "    " ++ content;
+					popForm.show(); win.loopMessage();
+        		}, msg.content
+    		)
+    		
+    		table.push(sysMessages, {
+				timestamp=time.format("%Y-%m-%d %H:%M:%S");
+				msg="【广播】" ++ msg.content
+			});
+			if(friendList.items[1]) friendList.items[1].sign = "【广播】" ++ msg.content;
+			friendList.refresh();
+		}
+		case "sys_reconnecting"{
+			//断线重连中：记录系统消息提示（避免用户误以为消息丢失）
+			table.push(sysMessages, {
+				timestamp=time.format("%Y-%m-%d %H:%M:%S");
+				msg="【ERR】"++msg.msg
+			});
+			if(friendList.items[[1]]) friendList.items[[1]].sign = msg.msg;
+			friendList.refresh();
+		}
+		case "sys_connected" {
+			//连接建立（含断线自动重连成功）：若已登录且内存中存有密码，自动重新登录恢复会话
+			//重登成功后服务器会自动推送好友列表与离线消息，界面自动恢复
+			if( winform.curUser && winform.curPwd ){
+				wsHelper.login(winform.curUser, winform.curPwd);
+				table.push(sysMessages, {
+					timestamp=time.format("%Y-%m-%d %H:%M:%S");
+					msg="连接已恢复，正在重新登录..."
+				});
+				if(friendList.items[[1]]) friendList.items[[1]].sign = "连接已恢复，正在重新登录...";
+				friendList.refresh();
+			}
+		}
+		case "kicked" {
+			//服务器主动断开：账号在别处登录/密码已修改/账户已注销
+			//必须先停止自动重连（否则自动重登会与对方互踢形成死循环）
+			wsHelper.close();
+			autoExit = true;
+			winform.show(false);
+			win.msgbox((msg.reason : "连接已被服务器关闭") ++ "，你需要重新登录."++ '\r\n' ++ "（如非本人操作请联系管理员）","请注意","warn");
+			winform.close();
+		}
+		case "sys_reconnect_failed"{
+			//自动重连已达上限仍失败：提示用户（不再自动退出程序，避免网络闪断误杀会话）
+			table.push(sysMessages, {
+				timestamp=time.format("%Y-%m-%d %H:%M:%S");
+				msg="【ERR】自动重连失败，消息收发已暂停"
+			});
+			if(friendList.items[[1]]) friendList.items[[1]].sign = "网络已断开，自动重连失败";
+			friendList.refresh();
+			win.msgbox(msg.msg ++ "。当前会话已离线，恢复网络后请重新登录程序。","连接断开","warn");
+		}
+		case "sys_closed" {
+			//连接断开（网络故障/服务器停止）：wsHelper 会自动尝试重连，此处仅提示不退出
+			//（“被踢/注销/改密”等服务器主动断开会先收到 kicked 消息，已在 kicked 分支处理）
+			table.push(sysMessages, {
+				timestamp=time.format("%Y-%m-%d %H:%M:%S");
+				msg="【ERR】与服务器的连接已断开，正在尝试自动恢复..."
+			});
+			if(friendList.items[[1]]) friendList.items[[1]].sign = "连接已断开，正在尝试自动恢复...";
+			friendList.refresh();
+		}	
+		case "sys_error"{
+			//记录系统消息
+			table.push(sysMessages, {
+				timestamp=time.format("%Y-%m-%d %H:%M:%S");
+				msg="【ERR】"++msg.msg
+			});
+			if(friendList.items[[1]]) friendList.items[[1]].sign = "【ERR】"++msg.msg;
+			friendList.refresh();
+		}
+		case "login_result" {
+			//仅处理“断线自动重登”的结果（正常登录由 loginForm 处理，此时 clientForm 尚未创建）
+			if(!msg.success && winform.curUser && winform.curPwd){
+				//自动重登失败（密码已修改/账号状态变化）：停止自动重连，提示用户重新登录
+				wsHelper.close();
+				winform.curPwd = null;
+				table.push(sysMessages, {
+					timestamp=time.format("%Y-%m-%d %H:%M:%S");
+					msg="【ERR】自动重新登录失败：" ++ (msg.message : "凭据已失效")
+				});
+				if(friendList.items[[1]]) friendList.items[[1]].sign = "自动重新登录失败，请重启程序登录";
+				friendList.refresh();
+				win.msgbox("自动重新登录失败：" ++ (msg.message : "凭据已失效") ++ "。请重新启动程序登录。","请注意","warn");
+			}
+		}
+	}
+}
+/*}}*/
+
+/*双击Item{{*/
+friendList.onDoubleClick = function(index, item){
+	//点击系统消息无效
+	if(index==1){
+		if(#sysMessages==0) return; 
+		var frmChild = winform.loadForm("\dlg\noticeListForm.aardio");
+		var data = {};
+		for(k,v in sysMessages){
+			table.push(data,{text=v.timestamp ++ "：  "++ v.msg});
+		}
+		frmChild.msglist.listData = data;
+		frmChild.msglist.refresh();
+		frmChild.show();	
+		return; 
+	}
+	// 检查该项是否已经打开过窗口
+	var friendName = item.name;
+	var frmChild =  chatWindows[friendName];
+	//  如果窗口不存在，或者窗口已经被用户关闭（句柄失效）
+    if( ! (frmChild && win.isWindow(frmChild.hwnd) ) ){
+        // 实例化新窗体
+        frmChild = winform.loadForm("\dlg\chatForm.aardio");
+        frmChild.username = winform.curUser; // 附加一个窗体属性
+        frmChild.userAvatar = gdip.bitmap( gdip.webp( "\res\avatars\" ++winform.curAvatarId) );
+        frmChild.friendname = friendName;
+        frmChild.friendAvatar = gdip.bitmap( gdip.webp("\res\avatars\" ++ item.avatar) );
+        frmChild.db = db; // message数据库的连接传给子窗体
+        
+        frmChild.chatBox.setUser1({
+        	id = frmChild.username;
+        	name = "我";
+        	bubbleColor=0xFFA0FF70;
+        	avatar = frmChild.userAvatar
+        });
+        frmChild.chatBox.setUser2({
+        	id = frmChild.friendname;
+        	name = "你";
+        	bubbleColor=0xFFA0FF70;
+        	avatar = frmChild.friendAvatar
+        });
+        frmChild.chatBox.user1isRight = false;     //用户1(默认为"我")是否显示在右侧
+		frmChild.chatBox.showGifAnimation(true);   //是否显示gif动画(true会启动每20ms刷新一下chatBox)
+
+        // 修改新窗口标题
+    	if(item.status == "online"){
+			frmChild.text = "与【" ++  friendName ++ "】聊天中...";	
+		}else{
+			frmChild.text = "给【" ++ friendName ++ "】发送离线消息..."	;
+		}
+		frmChild.originalTitle = frmChild.text; 
+		// 将新窗口存入映射表
+        chatWindows[friendName] = frmChild;
+        // 当新窗口关闭时，从映射表中移除，释放内存
+        frmChild.onClose = function(){
+            chatWindows[friendName] = null;
+        }
+	}
+	// 修改对话窗体图标
+	frmChild.modifyIcon(frmChild.friendAvatar);
+	frmChild.show();
+	// 加载与该好友的历史聊天记录
+	frmChild.onLoadHistoryMsg(frmChild.username, friendName);
+	
+	// 显示并激活到前台
+	win.setForeground(frmChild.hwnd); 
+	
+	if(userTempState[[friendName]]){
+		userTempState[friendName].unread = 0;
+		userTempState[friendName].lastMsg= null;
+		userTempState[friendName].isJump = false;	
+	}
+	item.unread = 0;	//取消红点
+	item.lastMsg= null;	//取消最近消息
+	
+	friendList.setJump(index,false);	//取消头像摆动
+	friendList.refresh();
+	
+	var bmpAvatar = null;
+	if(..gdip.bitmap.is(item.avatar)){
+        bmpAvatar = item.avatar;
+    }elseif(type(item.avatar)==type.string){
+        var imgpath = "/res/avatars/000.webp";
+        if(imgpath) bmpAvatar = gdip.bitmap( ..gdip.webp(imgpath) );
+    }
+	var hIcon = bmpAvatar.copyHandle("icon");
+	tray.icon = hIcon; hIcon=null;
+	bmpAvatar.delete(); 
+	tray.twinkle(false);	//取消托盘图标闪动
+}
+/*}}*/
+
+// 双击托盘图标：若有好友发来未读消息，直接打开其聊天窗口（复用好友列表双击逻辑）
+tray.onDblClick = function(){
+    if(!twinkleFriend) return;
+    var idx = userNamelist[twinkleFriend];
+    var item = friendList.items[[idx]];
+    if(item) friendList.onDoubleClick(idx, item);
+    twinkleFriend = null;
+};
+
+/*点击菜单{{*/
+winform.btnMore.oncommand = function(id,event){
+	var popmenu = win.ui.popmenu(winform);
+	popmenu.add(
+        text = "我的资料";
+        proc = function(id){ 
+			var frmChild = winform.loadForm("\dlg\MyInfoForm.aardio");
+			frmChild.curUser = winform.curUser;
+			frmChild.curAvatarId = winform.curAvatarId;
+			frmChild.curSign = winform.curSign;
+			
+			frmChild.text = "我的资料 ( " ++ frmChild.curUser ++ " )";
+			frmChild.txtAccount.text = frmChild.curUser;
+			frmChild.txtSign.text = frmChild.curSign;
+			frmChild.plusAvatarlist.hide = true;
+			frmChild.plusAvatarlist.orphanWindow();  //** 让checklist控件浮动
+			var bmp = gdip.bitmap( gdip.webp( "\res\avatars\" ++ frmChild.curAvatarId) );
+			frmChild.plusAvatar.background = bmp; //显示头像
+			//修改窗体icon
+			var hIcon = bmp.copyHandle("icon");
+			if(hIcon) frmChild.setIcon(hIcon);	
+			hIcon = null; bmp = null;
+			
+			frmChild.onUnregisted = function(){
+				//用户注销了账户
+				frmChild.close();
+				//关闭所有聊天窗口
+    			for(index, frm in chatWindows){
+        			if(win.isWindow(frm[["hwnd"]])) frm.close();
+    			}
+    				winform.curUser = "";
+    				winform.curSign = "";
+    				winform.curPwd = null; //同步清除内存中的密码，断线后不再自动重登
+    				winform.curUserName.text = "未登录";
+    			winform.curUserSign.text = "请退出程序重新登录..";
+				winform.curAvatarId = "000.webp";
+				winform.plusUserAvatar.redraw();
+    			friendList.items={}; friendList.refresh();
+    			userNamelist = null;
+    			winform.btnMore.disabled = true;
+    			db.close();
+    			wsHelper.close();
+			}
+			
+			frmChild.show();
+        }; 
+    )
+   	popmenu.add(
+        text = "聊天记录";
+        proc = function(id){ 
+			var frmChild = winform.loadForm("\dlg\messageListForm.aardio");
+			
+			frmChild.curUser = winform.curUser;
+			frmChild.db = db; // message数据库的连接传给子窗体
+
+			//直接在主窗体的好友列表设置子窗体界面
+			var datas  = {};
+			for i, v in table.eachIndex(friendList.items){
+				if(i>1)  table.push(datas, {text=v.name; icon=v.avatar});  //忽略item=系统消息
+			}
+			if(frmChild.onLoadFriendList) frmChild.onLoadFriendList(datas);
+			frmChild.show();
+        }; 
+    )
+	popmenu.add(); //分割线
+    popmenu.add(
+        text = "添加好友";
+        proc = function(id){ 
+			var frmChild = winform.loadForm("\dlg\addFriendForm.aardio");
+			frmChild.curUser = winform.curUser;
+			frmChild.getUserList(winform.curUser);	//调用子窗体函数
+			frmChild.show();
+			
+			//响应 add_me_rsult
+			//响应 add_me_rsult
+			frmChild.onFriendAdded = function(friendname){
+				frmChild.close();
+				userNamelist = {};
+				// 暂存系统消息提示，待 friend_list 返回后统一处理（异步事件驱动，无忙等）
+				table.push(pendingSysNotices, "你添加了好友 [" ++ friendname ++ "] ");
+				//刷新用户列表(异步)
+				wsHelper.send({msgType="get_friends"; data={username=winform.curUser}});
+			}
+        }; 
+    )
+    popmenu.add(
+        text = "删除好友";
+        proc = function(id){    
+			var frmChild = winform.loadForm("\dlg\removeFriendForm.aardio");
+			frmChild.curUser = winform.curUser;		
+			//直接在主窗体设置子窗体界面
+			var datas  = {};
+			for i, v in table.eachIndex(friendList.items){
+				if(i>1)  table.push(datas, {text=v.name; icon=v.avatar});  //忽略item=系统消息
+			}
+			if(frmChild.onLoadFriendList) frmChild.onLoadFriendList(datas);
+			frmChild.show();
+			
+			//响应 remove_me_rsult
+			frmChild.onFriendRemoved = function(friendname){
+				frmChild.close();
+				userNamelist = {};
+				userTempState[[friendname]] = null; // 删除该用户属性缓存表
+				// 如果被删除的好友已经打开聊天界面，关闭之。
+				for(index, frm in chatWindows){
+        			if(win.isWindow(frm[["hwnd"]]) && frm[["friendname"]]==friendname) frm.close();
+    			}		
+				
+				// 暂存系统消息提示，待 friend_list 返回后统一处理（异步事件驱动，无忙等）
+				table.push(pendingSysNotices, "你删除了好友 [" ++ friendname ++ "] ");
+				
+				//刷新用户列表(异步)
+				wsHelper.send({msgType="get_friends"; data={username=winform.curUser}});
+			}
+        }; 
+    )
+    popmenu.add();
+    popmenu.add(
+        text = "退出程序";
+        proc = function(id){
+            autoExit = false;
+            winform.close()
+        }; 
+    )
+    popmenu.popup(winform.btnMore.left,winform.btnMore.bottom,false);
+}
+/*}}*/
+
+winform.onDestroy = function(){
+	if(autoExit==false && !winform.msgboxTest("你确定要退出程序吗?","请确认")) return false; 
+    
+    // 关闭所有聊天窗口（使用映射表）
+    for(name, frm in chatWindows){
+        if( win.isWindow(frm[["hwnd"]]) ) frm.close();
+    }
+	//关闭其它所有窗体
+	for hwnd, frm in table.eachName(win._form._forms) {
+        // 只要不是主窗体自己，且窗口还活着，就强制关闭
+        if( hwnd != winform.hwnd && win.isWindow(hwnd) ){
+            frm.close();
+        }
+    }
+    
+	// 释放资源
+	userNamelist = null; 
+    userTempState = null;
+    sysMessages = null;
+
+    if(db) db.close();
+    if(wsHelper) wsHelper.close();
+    
+    //关闭接受大文件的工作线程
+    thread.command.exitThread();
+    
+    // 发送退出消息，结束 win.loopMessage()
+    win.quitMessage(); 
+}
+
+return winform;

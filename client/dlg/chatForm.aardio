@@ -1,0 +1,292 @@
+import win.ui;
+import fonts.fontAwesome;
+import chatBox;
+import fsys.dlg;
+import wsHelper;
+import thread.command;
+import raw.pack;
+import fsys.file;
+import plusStyle;
+import win.ui.minmax;
+import crypt; //encodeBin 文件编码
+/*DSG{{*/
+var winform = win.form(text="与 *** 聊天中...";right=603;bottom=421;clipch=1)
+winform.add(
+btnSendFile={cls="plus";text='\uF07B';left=533;top=370;right=589;bottom=400;anchors={right=1;bottom=1};font=LOGFONT(h=-18;name='FontAwesome');iconStyle={font=LOGFONT(name='FontAwesome')};notify=1;z=4};
+btnSendMsg={cls="plus";text='\uF27A  发送';left=447;top=370;right=522;bottom=400;anchors={right=1;bottom=1};bgcolor=0x8FB2B0;font=LOGFONT(name='FontAwesome');iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=10}};notify=1;z=2};
+plus={cls="plus";left=16;top=16;right=589;bottom=360;anchors={left=1;top=1;right=1;bottom=1};bgcolor=0xFFFFFF;clipch=1;edge=1;notify=1;z=1};
+txtMsg={cls="plus";left=16;top=369;right=433;bottom=403;align="left";anchors={left=1;right=1;bottom=1};bgcolor=0xFFFFFF;border={color=0xD2D2D2;radius=1;width=1};editable=1;font=LOGFONT(h=-14;name='Segoe UI Emoji');multiline=1;notify=1;paddingBottom=1;paddingLeft=1;paddingRight=1;paddingTop=1;textPadding={left=5;top=6;bottom=2};z=3}
+)
+/*}}*/
+
+win.ui.minmax( winform,500,300 ); 
+
+//设置窗体的icon
+winform.modifyIcon = function(bmp){
+	if(!bmp) return;
+	var hIcon = bmp.copyHandle("icon");
+	if(hIcon) winform.setIcon(hIcon);
+	hIcon = null;
+}
+
+/*样式{{*/
+winform.btnSendMsg.skin(plusStyle.buttonLayuiBlue);
+winform.btnSendFile.skin(plusStyle.buttonLayuiDefault);
+
+winform.txtMsg.skin({
+	border={
+		default={
+			color=0xFFD2D2D2;
+			width=1;
+		};
+		focus={
+			color=0xFF577DC9;
+			width=1;				
+		}
+	}
+})
+/*}}*/
+
+winform.chatBox = chatBox(winform.plus);
+
+// --- 待确认文本消息队列：发送时快照，回执时按序出队 ---
+winform.pendingTexts = {};
+
+//出队：移除并返回队首元素
+var shiftPendingText = function(){
+    var t = winform.pendingTexts;
+    var v = t[1];
+    if(v !== null){
+        var n = #t;
+        for(i=1;n-1;1){ t[i] = t[i+1]; }
+        t[n] = null;
+    }
+    return v;
+}
+
+winform.onLoadHistoryMsg = function(me,friend){
+	var hMessages = winform.db.getRecentHistory(me, friend);	
+	var datas = {};
+	for i,v in table.eachIndex(hMessages){
+		if(!v.content || v.content=="") continue;
+		var msg = {
+			userId=v.from_user;
+			contentType=v.msgtype;
+			content=v.content;
+			sendTime=v.timestamp; //string
+			filename=v[["filename"]]:"";
+			filesize=v[["filesize"]]:""
+		}
+		table.push(datas, msg);
+	}
+	winform.chatBox.load(datas);
+}
+
+winform.showFriendMsg = function(msg){
+	var user2 = msg.from;
+	var content = msg.content;
+	var timestamp = time(msg.timestamp,"%Y-%m-%d %H:%M:%S");
+	var filename = msg[["filename"]]:"";
+	var filesize = msg[["filesize"]]:"";
+	var msgtype = msg.msgtype;
+	winform.chatBox.showMsg(user2, content, msgtype, timestamp, filename, filesize);
+}
+
+// 监听消息
+var listener = thread.command();
+listener.onWsMessage = function(msg){
+	select(msg.msgType){
+		case "message_sent" {
+			// 只处理发给当前窗口好友的回执（消息是广播的，避免其他窗口误消费）
+			if(msg.to != winform.friendname) return;
+			//按序取出发送时刻的文本快照（与发送顺序一一对应，不受输入框后续变化影响）
+			var sentText = shiftPendingText();
+			if(!#sentText) return; //没有匹配的待确认消息，忽略
+			
+			//存入本地数据库（时间用服务器回执时间，双端记录一致）
+			winform.db.insertTextMessage(
+				winform.username,
+				winform.friendname, 
+				1/*text*/,
+				sentText,
+				msg.timestamp : time.format("%Y-%m-%d %H:%M:%S")
+			);
+			
+			//显示在聊天对话框中
+	    	winform.chatBox.showMsg(
+	    		winform.username, 
+	    		sentText,
+	    		1/*text*/,
+	    		time(msg.timestamp, "%Y-%m-%d %H:%M:%S"),
+	    		"",
+	    		""
+	    	) ; 
+    		winform.txtMsg.text = "";
+		}
+		case "file_sent" {
+			// 只处理发给当前窗口好友的回执（消息是广播的，避免其他窗口误处理）
+			if(msg.to != winform.friendname) return;
+			// 防御：本窗口未发送文件时忽略（避免 filepath 为 null 触发 NOT NULL 崩溃）
+			if(!winform.filepath) return;
+			//存入本地数据库（时间用服务器回执时间）
+			winform.db.insertFileMessage(
+				winform.username,
+				winform.friendname,
+				2/*file*/,
+				winform.filepath,
+				winform.filename,
+				winform.filesize,
+				msg.timestamp : time.format("%Y-%m-%d %H:%M:%S")
+			);
+			
+			//显示在聊天对话框中
+        	winform.chatBox.showMsg(winform.username, winform.filepath, 2/*file*/, time(msg.timestamp, "%Y-%m-%d %H:%M:%S"), winform.filename, winform.filesize) ;
+			winform.text = winform.originalTitle;
+			winform.filepath = null;
+			// 发送完成，恢复按钮状态（含大文件传输期间禁用的文本发送）
+            winform.btnSendFile.disabledText = null;
+            winform.btnSendMsg.disabledText = null;
+		}
+		case "error" {
+			//服务器拒绝/错误提示（如接收方不存在、文件超限等）
+			if(#msg.message) winform.msgbox(msg.message, "发送失败", "warn");
+		}
+	}	
+}
+		
+// 发文本消息	
+winform.btnSendMsg.oncommand = function(id,event){
+	var txt = string.trim( winform.txtMsg.editBox.text );
+    if(!#txt) { winform.txtMsg.editBox.setFocus(); return;}
+    
+    if( wsHelper.isConnected() ){
+    	//发送时刻即快照入队，回执时按序出队（防止回执延迟期间输入内容变化导致入库错乱）
+    	table.push(winform.pendingTexts, txt);
+        var msg = {
+    			msgType="send_message";
+    			data={username=winform.username; to=winform.friendname; content=txt}
+    		};
+	    if( !wsHelper.send(msg) ){
+	    	winform.pendingTexts[#winform.pendingTexts] = null; //发送失败，末尾出队
+	    }
+    }
+}
+
+winform.txtMsg.editBox.onOk = function(){
+    winform.btnSendMsg.oncommand();
+}
+
+// 发文件
+winform.btnSendFile.oncommand = function(id,event){
+	var path = fsys.dlg.open();
+    if(path){
+        winform.filepath = path;
+        winform.filename = fsys.getFileName(winform.filepath);
+
+        if( wsHelper.isConnected() ){
+            // 1. 禁用按钮，显示加载动画
+    		winform.btnSendFile.disabledText = '\uF07B';
+		
+    		// 2. 获取当前发送所需的所有必要参数
+    		var filepath = winform.filepath;
+    		var username = winform.username;
+    		var friendname = winform.friendname;
+    		var filename = winform.filename;
+			var fileSize = fsys.file(winform.filepath).size(); // 原始数值大小
+        	winform.filesize = math.size64(fileSize).format(); //聊天框绘制文件发送信息时用到此变量
+        
+        	if(fileSize <= 20971520/*20MB*/){
+                // 小文件：直接 Base64 发送
+                var fileBuffer = string.load(filepath);
+                if(!fileBuffer){ // 读取失败处理：恢复按钮状态，避免永久卡在加载动画
+                	winform.btnSendFile.disabledText = null;
+                	return; 
+                }
+
+                var base64Data = crypt.encodeBin(fileBuffer);
+                var msg = {
+                    msgType = "send_file";
+                    data = {
+                        username = username;
+                        to = friendname;
+                        filename = filename;
+                        data = base64Data
+                    }
+                };
+                if( !wsHelper.send(msg) ){ //发送失败（断线）：恢复按钮状态
+                	winform.btnSendFile.disabledText = null;
+                }
+            }else{
+				// 大文件：分块发送
+				//发送期间禁用文本发送：WebSocket 分片(continuation帧)不允许被其它完整帧插入，否则两端分片解析错乱
+				winform.btnSendMsg.disabledText = "传输中...";
+				
+                // 1. 构建文件头
+                var header = raw.pack("<128s128s256sI", username, friendname, filename, fileSize);
+		
+                // 2. 发送头部报文
+                wsHelper.sendData(header, 2, 0);
+                
+                // 3. 准备每一帧都需要携带的固定长度发送者信息（128字节），以便接收端识别来源
+    			var fromUserFixed = raw.pack("<128s", username);
+
+                // 3. 流式读取并发送
+                var bufSize = 512 * 1024; // 512KB
+               	var buffer = raw.buffer(bufSize);
+                var totalSent = 0;
+                var lastFull = false; // 最后一块是否为满块（用于 fin 帧补发判定）
+				var lastPercent = -1; // 初始化上次记录的百分比
+				
+                var file, err = ..io.open(filepath, "rb");
+                if(file){
+                    while( var readSize=file.readBuffer(buffer)/*分块读取文件*/ ) {
+                    	//窗口已销毁（用户确认退出），立即停止发送，防止向已关闭的 socket 写数据报错
+                    	if(!win.isWindow(winform.hwnd)) break;
+                    	
+                        lastFull = (readSize == bufSize);
+                        var isFin = lastFull ? 0 : 1;
+
+                        // 如果是最后一块，调整 buffer 大小
+                        var currentBlock = (readSize < bufSize) ? ..raw.slice(buffer, 1, readSize) : buffer;
+                        
+                        //绑定发送者信息的数据头
+						var packData = raw.join([fromUserFixed, currentBlock]);
+					
+                        wsHelper.sendData(packData, 0, isFin);
+                        totalSent += readSize;
+
+						// 基于百分比进行"回调节流"
+						var currentPercent = ..math.floor( (totalSent / fileSize) * 100 );	// 计算当前百分比
+						
+						// 仅在百分比发生变化，或者是最后一块数据时才回调界面
+        				if( currentPercent > lastPercent || totalSent == fileSize ){
+                        	if(winform.onSendData) winform.onSendData(filename, fileSize, totalSent);	// 回调函数
+							lastPercent = currentPercent; // 更新记录
+						}
+                        ..win.delay(5);
+                    }
+                    file.close();
+
+                    // 当文件大小恰为 512KB 整数倍（或空文件）时，最后一块为满块未发 fin 帧，
+                    // 补发一个只含发送者标识（128 字节）的空 fin 帧，服务端据此判定文件结束
+                    if(lastFull || totalSent == 0){
+                        wsHelper.sendData(fromUserFixed, 0, 1);
+                    }
+                }
+                winform.btnSendMsg.disabledText = null; //传输结束，恢复文本发送
+            }
+            // 发送完成
+    	}   		
+    }
+}
+
+//自定义回调函数 - 显示传输进度
+winform.onSendData = function(fileName,fileSize,sendSize){
+    winform.text = winform.originalTitle ++  "  正在发送文件（ " ++string.format("%.0f", math.floor( (sendSize / fileSize ) * 100)) ++ "% ）";
+}
+
+winform.onRecvData = function(fileName,fileSize,recvSize){
+    winform.text = winform.originalTitle ++  "   正在接收文件（ " ++string.format("%.0f", math.floor( (recvSize / fileSize ) * 100)) ++ "% ）";	
+}
+
+return winform;

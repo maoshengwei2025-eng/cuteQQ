@@ -1,0 +1,51 @@
+//security 安全与输入校验工具库
+import crypt;
+import crypt.random;
+
+var string = ..string;
+var crypt = ..crypt;
+
+namespace security {
+	// 密码哈希格式：v1:<盐>:<sha256(盐+密码) 小写十六进制>
+	// 旧版本为无盐 sha256（大写十六进制），verifyPassword 兼容校验并可在登录时自动升级
+	hashPassword = function(pwd){
+		var salt = crypt.random().string(16);
+		return "v1:" ++ salt ++ ":" ++ crypt.sha256(salt ++ pwd, false);
+	};
+
+	verifyPassword = function(pwd, stored){
+		if(!stored) return false;
+		if(string.startsWith(stored, "v1:")){
+			var parts = string.split(stored, ":");
+			if(#parts != 3) return false;
+			return crypt.sha256(parts[2] ++ pwd, false) == parts[3];
+		}
+		// 旧版无盐哈希（大写）
+		return crypt.sha256(pwd) == stored;
+	};
+
+	// 判断存储的密码是否为旧版无盐哈希
+	isLegacyHash = function(stored){
+		return !!(stored && !string.startsWith(stored, "v1:"));
+	};
+
+	// 用户名合法性：2~30 位，禁空白与危险字符，SYSTEM 为保留名
+	validUsername = function(name){
+		if(#name < 2 || #name > 30) return false;
+		if(string.lower(name) == "system") return false;
+		if(string.trim(name) != name) return false;
+		if(string.indexOf(name, " ") || string.indexOf(name, '\t')) return false;
+		var badChars = {"<"; ">"; '"'; "'"; "&"; "/"; '\\'};
+		for(i=1;#badChars;1){
+			if(string.indexOf(name, badChars[i])) return false;
+		}
+		return true;
+	};
+
+	// 清洗文件名：剔除路径分隔符与 Windows 非法字符，防止缓存目录穿越
+	sanitizeFilename = function(filename){
+		filename = string.trim(tostring(filename : ""));
+		if(!#filename) return "file";
+		return string.replace(filename, `[\\/\:*?"<>|]`, "_");
+	};
+}

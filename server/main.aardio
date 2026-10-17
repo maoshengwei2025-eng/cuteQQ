@@ -1,0 +1,275 @@
+//cuteQQ - IM 服务器控制台
+import win.ui;
+import fonts.fontAwesome;
+import win.ui.minmax;
+import win.util.tray;
+import win.ui.menu;
+import inet.adapter;
+
+import security;
+import db;
+import chatServer;
+import config;
+import userList;
+/*DSG{{*/
+var winform = win.form(text="cuteQQ - IM服务器控制台";right=735;bottom=463;bgcolor=0xFFFFFF;clipch=1)
+winform.add(
+btnBroadcast={cls="plus";text="全员广播";left=600;top=416;right=712;bottom=446;align="left";anchors={right=1;bottom=1};bgcolor=0x78D8FF;disabled=1;font=LOGFONT(h=-14);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=10}};iconText='\uF0A1';notify=1;textPadding={left=30};z=8};
+btnStart={cls="plus";text="启动服务器";left=424;top=64;right=560;bottom=94;align="left";anchors={top=1;right=1};bgcolor=0x78D8FF;font=LOGFONT(h=-14);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=10}};iconText='\uF04B';notify=1;textPadding={left=30};z=3};
+btnStop={cls="plus";text="停止服务器";left=576;top=64;right=711;bottom=94;align="left";anchors={top=1;right=1};bgcolor=0x78D8FF;disabled=1;font=LOGFONT(h=-14);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=10}};iconText='\uF04D';notify=1;textPadding={left=30};z=4};
+comboIp={cls="combobox";left=100;top=24;right=712;bottom=50;anchors={left=1;top=1;right=1};edge=1;font=LOGFONT(h=-14);items={"0.0.0.0 (所有网卡)"};mode="dropdown";z=9};
+editBroadcast={cls="edit";left=88;top=416;right=576;bottom=448;anchors={left=1;right=1;bottom=1};edge=1;font=LOGFONT(h=-14);multiline=1;z=7};
+editLog={cls="edit";left=224;top=136;right=712;bottom=400;anchors={left=1;top=1;right=1;bottom=1};edge=1;multiline=1;vscroll=1;z=5};
+editPort={cls="edit";text="8080";left=99;top=64;right=176;bottom=91;anchors={left=1;top=1};edge=1;font=LOGFONT(h=-14);z=2};
+logtitle={cls="plus";text="系统日志";left=224;top=112;right=712;bottom=136;align="left";anchors={left=1;top=1;right=1};bgcolor=0xE8F4FD;color=0x787878;font=LOGFONT(h=-13;weight=700);textPadding={left=10};z=13};
+plusUserList={cls="plus";left=24;top=136;right=210;bottom=400;anchors={left=1;top=1;bottom=1};border={color=0xC0C0C0;width=1};clipch=1;z=11};
+static={cls="static";text="监听端口：";left=24;top=61;right=93;bottom=92;anchors={left=1;top=1};center=1;transparent=1;z=1};
+static2={cls="static";text="系统广播：";left=24;top=416;right=96;bottom=447;anchors={left=1;bottom=1};center=1;transparent=1;z=6};
+static3={cls="static";text="监听网卡：";left=24;top=23;right=120;bottom=51;anchors={left=1;top=1};center=1;transparent=1;z=10};
+userListTitle={cls="plus";text="在线用户";left=24;top=112;right=210;bottom=136;align="left";anchors={left=1;top=1};bgcolor=0xE8F4FD;color=0x787878;font=LOGFONT(h=-13;weight=700);textPadding={left=10};z=12}
+)
+/*}}*/
+
+/*按钮样式{{*/
+winform.btnStop.skin({
+	background={
+		active=0xFFF65F40;
+		default=0xFFFFB48D;
+		disabled=0xFFCCCCCC;
+		hover=0xFFFF9057		
+	};
+	color={
+		active=0xFFFFFF00;
+		default=0xFF000000;
+		disabled=0xFF6D6D6D;
+		hover=0xFFFFFFFF		
+	}
+})
+
+winform.btnStart.skin({
+	background={
+		active=0xFF0000FF;
+		default=0xFF78D8FF;
+		disabled=0xFFCCCCCC;
+		hover=0xFF4BABD4		
+	};
+	color={
+		active=0xFFFFFF00;
+		default=0xFF000000;
+		disabled=0xFF6D6D6D;
+		hover=0xFFFFFFFF		
+	}
+})
+
+winform.btnBroadcast.skin({
+	background={
+		active=0xFF0000FF;
+		default=0xFF78D8FF;
+		disabled=0xFFCCCCCC;
+		hover=0xFF4BABD4		
+	};
+	color={
+		active=0xFFFFFF00;
+		default=0xFF000000;
+		disabled=0xFF6D6D6D;
+		hover=0xFFFFFFFF		
+	}
+})
+/*}}*/
+
+win.ui.minmax( winform,500,300 ); 
+
+/*托盘图标{{*/
+var tray = win.util.tray(winform); //创建托盘图标
+tray.tip = "cuteQQ - 服务器";
+//-------弹出菜单---------
+winform.popmenu = win.ui.popmenu(winform);//创建弹出菜单
+winform.popmenu.add("显示主界面",function(id){ winform.show(true) });
+winform.popmenu.add();//分隔线
+winform.popmenu.add('退出程序',function(id){ winform.close() });
+winform.onTrayMessage = {
+	[0x205/*_WM_RBUTTONUP*/  ] = function(wParam){
+		// 右键单击
+        winform.popmenu.popup();
+	};
+	[0x203/*_WM_LBUTTONDBLCLK*/] = function(wParam){ 
+		// 左键双击
+		winform.show(true);
+	}; 
+	[0x202/*_WM_LBUTTONUP*/] = function(wParam){ 
+		// 左键单击
+        if( winform.hide==false) ..win.setForeground(winform.hwnd) //前置窗口
+    }  
+}
+winform.onMinimize = function(){
+	winform.show(false);  // 隐藏窗口（不显示在任务栏）
+	return true; // 拦截默认最小化动作
+}
+/*}}*/
+
+// --- 初始化网卡列表 ---
+var loadIpAdapters = function(){
+    winform.comboIp.clear();
+    winform.comboIp.add("0.0.0.0 (所有网卡)");
+
+    // 遍历所有网卡
+    for adptInfo in inet.adapter.each() { 
+
+         //获取所有 IP
+    	for( ipAddr, strAddr   in adptInfo.eachAddress() ){
+    	    if(strAddr != "0.0.0.0") winform.comboIp.add(strAddr + " (" + adptInfo.description + ")");
+    	}
+    }
+    winform.comboIp.selIndex = 1;
+}
+
+loadIpAdapters(); // 执行加载
+
+// --- UI 日志功能 ---
+var serverLog = function(tag, msg){
+    if(!msg) return; 
+    var str = tostring(msg);
+
+    // 限制单条日志长度，防止 UI 崩溃
+    if(#str > 1000) str = string.left(str, 1000) + "...(过长已截断)";
+
+    var timestamp = time.format("%Y-%m-%d %H:%M:%S");
+
+    // 如果文本太长，先清空一部分
+    if(#winform.editLog.text > 100 * 1024){ // 超过 100KB 就清理
+        winform.editLog.text = '[系统] 日志已自动清理记录...\r\n';
+    }
+
+    winform.editLog.printf("[%s] [%s] %s", timestamp, tag, str);
+};
+
+// --- 初始化数据库与服务器核心 ---
+var database = db.Database(config.dbPath);
+var server = chatServer.ChatServer(database, {
+	fileCacheDir = config.fileCacheDir;
+	maxSmallFileSize = config.maxSmallFileSize;
+	chunkSize = config.chunkSize;
+	heartbeatTimeout = config.heartbeatTimeout;
+}, serverLog);
+
+var heartCheckTimer = null; // 心跳巡检定时器
+var fileSendTimer = null;   // 文件发送消费定时器（驱动工作线程产出的数据帧真正发送出去）
+
+// --- 左侧用户列表（在线用户在前/彩色头像，离线用户在后/灰度头像） ---
+var userListCtl = userList(winform.plusUserList);
+userListCtl.itemHeight = 60;         // 项目高度
+userListCtl.fontSizeName = 11;       // 姓名大小
+userListCtl.showOnlineStatus = true; // 显示在线状态小圆点
+userListCtl.showTip = true;          // 悬停显示 Tooltip
+
+// 刷新用户列表：从数据库读取全部用户，按在线状态排序
+var refreshUserList = function(){
+    var rows = database.getAllUsers();
+    var data = {};
+    for(i=1;#rows;1){
+        var row = rows[i];
+        table.push(data, {
+            name = row.name;
+            avatar = row.avatarID : "000.webp";
+            sign = row.sign : "";
+            status = (row.online == 1) ? "online" : "offline";
+            unread = 0;
+        });
+    }
+    userListCtl.setData(data);
+
+    // 统计在线人数并更新标题
+    var onlineCount = 0;
+    for(i=1;#data;1){
+        if(data[i].status == "online") onlineCount++;
+    }
+    winform.userListTitle.text = "在线用户 (" ++ onlineCount ++ "/" ++ #data ++ ")";
+};
+
+refreshUserList(); // 初始加载一次
+
+// 定时刷新用户列表（每 2 秒同步一次在线状态）
+winform.addtimer(2000, function(){
+    refreshUserList();
+});
+
+// --- 启动服务器 ---
+winform.btnStart.oncommand = function(id,event){
+    var port = tonumber(winform.editPort.text);
+    if(!port){
+        winform.msgboxErr("请输入有效的端口号");
+        return;
+    }
+    
+	// 从组合框中提取 IP 地址（通过模式匹配提取开头的 IP 部分）
+    var listenIp = string.match(winform.comboIp.text, "^[\d\.]+") : "0.0.0.0";
+    
+    if( server.start(listenIp, port) ){
+        serverLog("INFO", "服务器已在端口 " ++ port ++ " 启动 (" ++ server.ws.getUrl(,true) ++ ")");
+        winform.btnStart.disabledText = ['\uF254','\uF251','\uF252','\uF253','\uF250',text='正在运行...']
+        winform.btnStop.disabled = false;
+        winform.editPort.disabled = true;
+        winform.comboIp.disabled = true;
+        winform.btnBroadcast.disabled = false;
+        
+        // 心跳巡检：清理“启用心跳但长时间无活动”的死连接
+        if(!heartCheckTimer){
+            heartCheckTimer = winform.addtimer(config.heartbeatCheckInterval, function(){
+                server.cleanStaleConnections();
+            });
+        }
+        // 文件发送消费：把工作线程打包好的数据帧真正发送给客户端
+        if(!fileSendTimer){
+            fileSendTimer = winform.addtimer(30, function(){
+                server.consumeSendQueue();
+            });
+        }
+    } else {
+        serverLog("ERR", "启动失败，可能是端口被占用或 IP 无效");
+    }
+}
+
+// --- 停止服务器 ---
+winform.btnStop.oncommand = function(id,event){
+    var wasRunning = !!server.ws;
+    server.stop();
+    if(wasRunning) serverLog("INFO", "服务器已停止");
+    // 停止心跳巡检与文件发送消费定时器
+    if(heartCheckTimer){ winform.killtimer(heartCheckTimer); heartCheckTimer = null; }
+    if(fileSendTimer){ winform.killtimer(fileSendTimer); fileSendTimer = null; }
+    winform.btnStart.disabled = false;
+    winform.btnStop.disabled = true;
+    winform.editPort.disabled = false;
+    winform.comboIp.disabled = false;
+    winform.btnBroadcast.disabled = true;
+}
+
+// --- 广播功能 ---
+winform.btnBroadcast.oncommand = function(id,event){
+    if(!server.ws){
+        winform.msgboxErr("服务器未启动");
+        return;
+    }
+
+    var msgText = string.trim(winform.editBroadcast.text);
+    if(!#msgText) {winform.editBroadcast.setFocus(); return;}
+
+    if( server.broadcast(msgText) ){
+    	winform.editBroadcast.text = ""; // 清空
+    }
+}
+
+// 回车发布广播
+winform.editBroadcast.onOk = function(){
+    winform.btnBroadcast.oncommand();
+}
+
+winform.onClose = function(hwnd,message,wParam,lParam){
+	if(!winform.msgboxTest("你确定要退出【IM服务器程序】吗?","请确认")) return false; 
+    server.stop();
+    database.close();
+    if(tray) tray.delete();
+}
+
+winform.show();
+win.loopMessage();

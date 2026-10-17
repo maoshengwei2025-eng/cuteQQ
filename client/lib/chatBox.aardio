@@ -1,0 +1,698 @@
+//chatBox 聊天控件
+import ..win;
+import ..gdip.webp;
+import ..gdip.bitmap;
+import ..fsys;
+import ..fsys.info;
+import ..fsys.file;
+import ..process;
+import ..time;
+
+class chatBox {
+    ctor( plusCtrl ){
+        if(plusCtrl.cls != "plus") error("必须在 plus 控件上构造",2);
+        this.plus = plusCtrl;
+		this.plus.notify = true;
+
+        this.fontSize = 14;
+        this.fontName = "Microsoft YaHei":"Tahoma";
+        this.textColor = 0xFF333333;
+        this.sendTimeColor = 0xFF999999;
+        this.user1isRight =  true;	//默认userA位于右侧
+        this.avatarSize = 40;		// 头像尺寸
+        this.avatarRound = true;	// 头像是否圆形
+        this.padding = 10;			// 每个消息的上下左右边距
+        this.bubblePadding = 8;		// 气泡内边距
+        this.scrollbarWidth = 4;	//滚动条宽度
+		
+		// - - - -  内部属性 - - - -
+        // 内部状态
+        var messages = {}; // 存储消息对象
+        var imageCache = {}; // 定义一个图片缓存表
+        
+        var contentHeight = 0; // 总内容高度
+		var scrollPos = 0; // 当前滚动偏移量（正数）
+		var urlPattern = "https?\://[^\s]+";
+		var _cursor_hand  = ::LoadCursor(,topointer(32649/*_IDC_HAND*/));
+		var iconSize = 40;
+		var showAnimation = false;  //是否显示gif动画
+
+        // --- 滚动条拖动相关私有变量 ---
+        var barW = 0; // 内部绘图和坐标计算依赖的实时滚动条宽度
+        var isDragging = false;
+        var dragStartY = 0;
+        var dragStartScrollPos = 0;	//滑块移动起始位置
+        var barSenseWidth = 15;		//滚动条点击感应宽度,适当加大以方便操作
+
+		// --- 事件回调句柄 ---
+        this.onItemClick = null;		//单击：function(msg, x, y){}
+        this.onItemDoubleClick = null;	//双击：function(msg, x, y){}
+        this.onItemRightClick = null;	//右键：function(msg, x, y){}
+
+		var bmp_avatar = ..gdip.bitmap(40,40);
+		var g = bmp_avatar.getGraphics();
+		var b = ..gdip.solidBrush(0xFFE07A5A);
+		g.fillRectangle(b,0,0,40,40); g.save(); 
+		b.delete();	
+		
+        // --- 默认配置属性 (公开属性) ---
+        var userA = {id = "userA"; name = "我"; bubbleColor=0xFFA0FF70; avatar = bmp_avatar };
+        var userB = {id = "userB"; name = "你"; bubbleColor=0xFFF3FF3F;  avatar = bmp_avatar };
+        this.users = { [userA.id] = userA; [userB.id] = userB };
+
+        this.setUser1 = function(tb){
+            if(type(tb)!=type.table) error("参数必须是table",2);
+        	if(tb.id) userA.id = tb.id;  if(tb.name) userA.name = tb.name;  
+        	if(tb.bubbleColor) userA.bubbleColor = tb.bubbleColor;
+        	if(tb.avatar && ..gdip.bitmap.is(tb.avatar)) userA.avatar = tb.avatar;  
+        	this.users[userA.id] = userA;
+        }
+        this.setUser2 = function(tb){
+            if(type(tb)!=type.table) error("参数必须是table",2);
+        	if(tb.id) userB.id = tb.id;  if(tb.name) userB.name = tb.name;  
+        	if(tb.bubbleColor) userB.bubbleColor = tb.bubbleColor; 
+        	if(tb.avatar && ..gdip.bitmap.is(tb.avatar)) userB.avatar = tb.avatar;  
+        	this.users[userB.id] = userB;
+        }
+
+		// 内部方法：获取图片（带缓存）
+		var getImage = function(path){
+    		if(!path) return;
+		
+    		// 1. 检查缓存：如果是 true (对象) 或 false (表示已确认不存在)，直接返回
+    		// 注意：在 aardio 中，if(imageCache[path] !== null) 可以判断键是否存在
+    		if( imageCache[path] !== null ) return imageCache[path];
+		
+        	var bmp = ..gdip.bitmap(..gdip.webp(path));
+        	imageCache[path] = bmp;
+    		return bmp;
+		}
+
+
+		// 在类销毁前或清空消息时释放缓存
+		this.clear = function(){
+    		messages = {};
+    		
+    		// 清理图片缓存
+    		for(path, bmp in imageCache){
+        		if(..gdip.bitmap.is(bmp)) bmp.delete();
+    		}
+    		imageCache = {};
+    		
+    		scrollPos = 0;
+    		this.plus.redraw();
+		}
+
+		// - - - -  内部方法：- - - -
+		// 1. 检测坐标 (x,y) 命中了哪条消息
+        var hitTest = function(x, y){
+            // 将鼠标点击的 y 坐标转换成内容区域的绝对 y 坐标（相对于内容顶端）
+            var absoluteY = y + scrollPos;
+            for(i=1;#messages;1){
+                var rect = messages[i].rcBubble;
+                // 此时 rcBubble 存储的是绝对位置,直接判断即可
+                if(rect && rect.contains(x, absoluteY)){
+                    return i, messages[i];
+                }
+            }
+        };
+        
+        // 2. 判断文件后缀是不是图片格式
+		var isImageFile = function(path){
+    		if(!path) return false;
+	
+    		var pathInfo = ..io.splitpath(path);
+    		var ext = pathInfo.ext;
+	
+    		if(!ext) return false;
+    		ext = ..string.lower(ext);
+	
+    		var imageExts = {
+        		".jpg"; ".jpeg"; ".png"; ".gif"; ".bmp"; ".ico"; ".tif"; ".tiff"; ".webp"
+    		};
+	
+    		return !!..table.find(imageExts, ext);
+		};
+				
+		// 3. 限制滚动不能出界
+    	var clampScroll = function(){
+        	var viewH = this.plus.height;
+        	var maxScroll = ..math.max(0, contentHeight - viewH);
+	
+        	if(scrollPos > maxScroll) scrollPos = maxScroll;
+        	if(scrollPos < 0) scrollPos = 0;
+    	};
+    
+    	// - - - - 公开事件 - - - -
+        // **绘图**
+        this.plus.onDrawContent = function(graphics, rc, txtColor, rcContent){
+            var _, _, scaleX, scaleY = this.plus.getScale();
+        	var viewW, viewH = rc.width, rc.height; 
+			var padX, padY = this.padding * scaleX, this.padding * scaleY;
+			
+			var fontMain = ..gdip.font(this.fontName, this.fontSize * scaleX, 0, 2/*_UnitPixel*/) ;
+        	var fontTime = ..gdip.font(this.fontName, (this.fontSize - 4)*scaleX, 0, 2/*_UnitPixel*/);
+        	var strFormat = ..gdip.stringformat();
+        	strFormat.align = 0;        //水平左对齐
+        	strFormat.lineAlign = 1;	//垂直对齐
+        	strFormat.trimming = 1;		//按字符截断
+        	strFormat.flags = 0x4000/*_StringFormatFlagsNoClip*/ | 0x2000/*_GdipStringFormatFlagsLineLimit*/ ;
+        	
+        	// --- 第一步：预先计算总高度，以确定 barW ---
+        	var tempTotalH = padY;  // 顶边距
+        	var maxChatW = viewW * 0.6;
+      		
+        	var nowTick = ..time.tick(); // 获取当前毫秒时间戳
+			
+        	for(i=1;#messages;1){
+            	var msg = messages[i];
+				
+				// 逻辑必须与绘制完全一致：判断是否显示时间
+            	var isShowTime = false;
+            	if( i == 1 ){ isShowTime = true; }
+            	else {
+                	var tm_cur = ..time(msg.sendTime,"%Y-%m-%d %H:%M:%S");
+                	var tm_last = ..time(messages[i-1].sendTime,"%Y-%m-%d %H:%M:%S");
+                	if(..math.abs(tm_cur.diffSeconds(tm_last)) > 120) isShowTime = true;
+            	}
+            	// 1. 计算时间字符串的高度
+            	if(isShowTime){
+            		var rcTime = graphics.measureString(msg.sendTime, fontTime, ::RECTF(), strFormat );
+            		tempTotalH += rcTime.height + padY; 
+            	}
+             	// 2. 计算内容区块的高度  
+            	var cH = 0;
+            	if(msg.contentType == 1){
+                	//消息为字符串
+                	var limitRc = ::RECTF(0, 0, maxChatW - this.bubblePadding * 2, 5000);  //固定rc宽度
+                	var rcString = graphics.measureString(msg.content, fontMain, limitRc, strFormat);
+                	cH = ..math.max(rcString.height + this.bubblePadding * 2, this.avatarSize);
+            	} elseif(msg.contentType == 2/*file*/) {
+            		if( isImageFile(msg.content) ){	//image
+                		var bmp = getImage(msg.content); // 使用缓存
+        				if(bmp){
+                    		var imgW, imgH = bmp.width, bmp.height;
+                    		var ratio = ..math.min(maxChatW/imgW, 200/imgH);
+							cH = imgH * ratio; 
+						}else{ /*加载图像出错时的提示*/
+						 	cH = 100; /*加载失败图片的默认高度: 130×100px*/ 
+						}	
+            		} else{ /*other type file*/
+            			cH = iconSize + this.bubblePadding * 2; /*图标尺寸：48×48*/ 
+            		}
+        		}
+            	tempTotalH += ..math.max(cH, this.avatarSize) + padY;
+        	}
+        	
+			//更新总内容高度
+        	contentHeight = tempTotalH;
+        	
+        	// 提前锁定 barW,供后续所有 X 坐标计算使用
+        	barW = (contentHeight > viewH) ? this.scrollbarWidth : 0;
+	
+        	// --- 第二步：计算绘制对象大小并绘制 ---
+        	graphics.smoothingMode = 4/*_SmoothingModeAntiAlias*/;
+        	graphics.textRenderingHint = 3/*_TextRenderingHintAntiAliasGridFit*/;
+	
+        	var brushTime = ..gdip.solidBrush(this.sendTimeColor);
+        	var brushText = ..gdip.solidBrush(this.textColor);
+			
+			//计算每个content的绘制起点(Y)
+        	var curY = padY - scrollPos;
+	
+        	for(i=1;#messages;1){
+            	var msg = messages[i];
+            	var user = this.users[msg.userId];
+            	if(!user) continue;
+            	
+            	var isShowTime = false;
+				//当前发出的消息距上一个消息的事件差大于2分钟，显示当前消息时间
+				//否则，不显示消息时间
+        		if(i == 1){
+        			isShowTime = true;
+        		}else {
+        	    	var tm_cur = ..time(msg.sendTime,"%Y-%m-%d  %H:%M:%S");
+            		var tm_last = ..time(messages[i-1].sendTime,"%Y-%m-%d  %H:%M:%S");
+            		var diff = ..math.abs(tm_cur.diffSeconds(tm_last));
+            		if(diff > 120) isShowTime = true;
+        		}
+	
+            	// 1. 绘制时间
+            	if(isShowTime){
+                	var sendTimeStr = "";
+                	var tm = ..time(msg.sendTime,"%Y-%m-%d %H:%M:%S");
+                	if(tm.diffYears(..time())>=0){ //今年 (仅显示月日)
+                    	if(tm.diffDays(..time())>=0){ //今天(仅显示%H:%M)
+                    		if(..time().day-tm.day == 1){sendTimeStr = "昨天 " ++ ..tostring(tm,"%H:%M");
+                    		}else{sendTimeStr = ..tostring(tm,"%H:%M");}
+                    	}elseif(tm.diffDays(..time())==-1){
+                    		sendTimeStr = "昨天 " ++ ..tostring(tm,"%H:%M");
+                    	}elseif(tm.diffDays(..time())==-2){
+                    		sendTimeStr = "前天 " ++ ..tostring(tm,"%H:%M");
+                		}else{
+                			sendTimeStr = ..tostring(tm,"%m月%d日 %H:%M");
+                		}	
+                	}else{ //显示年月日
+                		sendTimeStr = ..tostring(tm,"%Y-%m-%d %H:%M");
+                	}
+                	var rcTime = graphics.measureString(sendTimeStr, fontTime, ::RECTF(), strFormat );
+                	var th = rcTime.height;
+                	//在可见区域绘图
+                	if(curY + th > 0 && curY < viewH){
+                    	graphics.drawString(sendTimeStr, fontTime, ::RECTF((viewW-barW-rcTime.width)/2/*水平居中*/, curY, rcTime.width, th), strFormat, brushTime);
+                	}
+                	curY += th + padY;
+            	}
+				
+				// 2. 计算绘制头像的起始坐标点
+            	var isRight = false
+            	if(this.user1isRight==true && (msg.userId == userA.id)) isRight = true;
+            	if(this.user1isRight==false && (msg.userId == userB.id)) isRight = true;
+            	var avatarX = isRight ? (viewW - padX - this.avatarSize - barW) : padX;
+				
+				// 3. 计算绘制内容的起始坐标点
+            	var contentW, contentH;
+            	if(msg.contentType == 1/*text*/){
+                	var limitRc = ::RECTF(0, 0, maxChatW - this.bubblePadding * 2, 5000);
+                	var rcString = graphics.measureString(msg.content, fontMain, limitRc, strFormat);
+                	contentW = rcString.width + this.bubblePadding * 2;
+                	contentH = ..math.max(rcString.height + this.bubblePadding * 2, this.avatarSize);
+            	} elseif(msg.contentType == 2/*file*/) {
+                	if( isImageFile(msg.content) ){ /*image*/
+                		var bmp = getImage(msg.content); // 使用缓存
+        				if(bmp){
+            				var imgW, imgH = bmp.width, bmp.height;
+            				var ratio = ..math.min(maxChatW/imgW, 200/imgH, 1);
+            				contentW = imgW * ratio;
+            				contentH = imgH * ratio;
+						}else{ contentW = 130; contentH = 100; }	//image no find.
+                	} else{ /*other type file*/
+                		var filePath = ..io.exist(msg.content);
+                    	if(filePath){
+                			var limitRc = ::RECTF(0, 0, maxChatW - this.bubblePadding * 5, 5000);
+                			var fileName = msg.filename;
+               				var rcString = graphics.measureString(fileName, fontMain, limitRc, strFormat);
+                    		if(rcString){
+                        		contentW = rcString.width + this.bubblePadding * 6 + iconSize ; //左右边距宽一些
+                        		contentH = iconSize + this.bubblePadding * 2; /*图标尺寸：48×48*/
+                    		}else {
+                        		contentW = limitRc.width/2; 
+                        		contentH = this.avatarSize; // 给个默认大小
+                    		}
+                		}else{
+                    			//路径的文件不存在
+                    			var txtErr = "未找到文件: " ++ msg.filename;
+                    			var limitRc = ::RECTF(0, 0, maxChatW - this.bubblePadding * 2, 5000);
+                    			var sf = ..gdip.stringformat();
+                    			sf.lineAlign = 1/*_StringAlignmentCenter*/ ;
+                   		 		sf.flags = 0x2000;
+                   		 		sf.trimming = 5;
+                    			var rcErrstring = graphics.measureString(txtErr, fontMain, limitRc, sf);
+                    			contentW = rcErrstring.width + this.bubblePadding * 4;
+								contentH = ..math.max(rcErrstring.height + this.bubblePadding * 2, this.avatarSize);
+                   		} 		
+                	}
+            	}
+				//绘制内容区的X坐标
+            	var contentX = isRight ? (avatarX - 10 - contentW) : (avatarX + this.avatarSize + 10);
+	
+				// 4. 重要：记录气泡绝对坐标（相对于内容总顶端）,用于 hitTest 
+            	msg.rcBubble = ::RECT(contentX, curY + scrollPos, contentX + contentW, curY + contentH + scrollPos);
+				
+				// 5. 在可见区域绘图（内容=头像+消息）
+            	if( curY + contentH > 0 && curY < viewH){
+                	// 5.1 头像
+                	if(..gdip.bitmap.is(user.avatar)){
+                    	var gState = graphics.save();
+                    	if(this.avatarRound){
+                        	var path = ..gdip.path();
+                        	path.addEllipse(avatarX, curY, this.avatarSize, this.avatarSize);
+                        	graphics.setClipPath(path); 
+                        	path.delete();
+                    	}
+                    	graphics.drawImageRect(user.avatar, avatarX, curY, this.avatarSize, this.avatarSize);
+                    	graphics.restore(gState);
+                	}
+					// 5.2 气泡
+					if(not isImageFile(msg.content)){
+                		var brushBubble = ..gdip.solidBrush(user.bubbleColor : 0xFFCCCCCC);
+                		//给气泡靠近头像的一侧绘制小三角形
+                		var path = ..gdip.path();
+                		if(isRight){
+                    		path.addLine(contentX + contentW, curY + 12*scaleY, contentX + contentW + 5*scaleX, curY + 15*scaleY);
+                    		path.addLine(contentX + contentW + 5*scaleX, curY + 15*scaleY, contentX + contentW, curY + 18*scaleY);
+                		} else {
+                    		path.addLine(contentX, curY + 12*scaleY, contentX - 5*scaleX, curY + 15*scaleY);
+                    		path.addLine(contentX - 5*scaleX, curY + 15*scaleY, contentX, curY + 18*scaleY);
+                		}
+                		path.closeFigure();
+                		graphics.fillPath(brushBubble, path);
+                		path.delete();
+	
+                		// 绘制气泡主体（圆角矩形）
+                		graphics.fillRoundRect(brushBubble, contentX, curY, contentW, contentH, 8);
+                		brushBubble.delete();
+					}
+					// 5.3 内容
+                	if(msg.contentType == 1/*text*/){
+                    	// 文本消息
+                    	var textRc = ::RECTF(contentX + this.bubblePadding, curY + this.bubblePadding, contentW - this.bubblePadding * 2, contentH - this.bubblePadding * 2);
+                    	// 检查是否有 URL
+    					var url = ..string.match(msg.content, urlPattern);
+    					if(url && (#url==#msg.content)){
+        					// 如果包含 URL，且字全部符串仅是一个url整段文字，换一个深蓝色。
+        					var curFont = ..gdip.font(this.fontName, this.fontSize *scaleX,4/*Italic*/, 2/*_UnitPixel*/) 
+        					var brushUrl = ..gdip.solidBrush(0xFF0066CC); // 链接蓝
+        					graphics.drawString(msg.content, curFont, textRc, strFormat, brushUrl);
+        					brushUrl.delete();	curFont.delete();
+    					} else {
+    				    	//普通字符串
+        					graphics.drawString(msg.content, fontMain, textRc, strFormat, brushText);
+    					}
+                	} elseif(msg.contentType ==2/*file*/){
+                    	// 缩略图
+                    	if( isImageFile(msg.content) ){ /*image*/
+                    		 var bmp = getImage(msg.content); // 使用缓存
+        					if(bmp){
+                        		//如果是gif
+                        		if(showAnimation && bmp.totalFrames>1){
+                        	    	msg.curFrame := 1;
+                        	    	msg.lastTick := nowTick; // 记录初始时间
+                        	    	msg.delays   :=  bmp.getFrameDelays();
+                    				// 获取当前帧应有的延迟（毫秒），若获取不到默认为 0.1s
+                    				var currentDelay = msg.delays[msg.curFrame] : 100;
+				
+                    				// 判断是否达到切帧时间点
+                    				if( (nowTick - msg.lastTick) >= currentDelay * 10 ){
+                        				msg.curFrame++;
+                        				if(msg.curFrame > bmp.totalFrames) msg.curFrame = 1;
+                        				msg.lastTick = nowTick; // 更新该项的上一次播放时间
+                    				}
+                    				// 切换并绘制当前帧
+                    				bmp.selectActiveFrame(msg.curFrame);
+                				}
+	
+                        		var path = ..gdip.path();
+                        		path.addRoundRect(contentX, curY, contentW, contentH, 8);
+                        		var gState = graphics.save();
+                        		graphics.setClipPath(path); 
+                        		//绘制图像
+                        		graphics.drawImageRect(bmp, contentX, curY, contentW, contentH);
+                        		graphics.restore(gState);
+                        		path.delete();
+                    		}else{
+                    			//显示一张错误图片
+                    			var bmpErr = ..gdip.bitmap("\res\err.jpg");
+                        		graphics.drawImageRect(bmpErr, contentX, curY, 130, 100);
+                        		bmpErr.delete(); 
+                    		}
+                    	}else{
+                    		/*other type file*/
+                    		var filePath = ..io.exist(msg.content);
+                    		if(filePath){
+                    		    //1. draw icon
+                    		    var sfi = ..fsys.info.get(filePath, 0x100/*_SHGFI_ICON*/);
+                    		    if(sfi.hIcon){
+        							var bmpIcon = ..gdip.bitmap(sfi.hIcon, 1);
+        							::User32.DestroyIcon(sfi.hIcon);	// 转换完立即释放临时句柄
+        							graphics.drawImageRect(
+    									bmpIcon,
+    									contentX + this.bubblePadding*2,
+    									curY + this.bubblePadding,
+    									iconSize,
+    									iconSize
+    								);
+    								bmpIcon.delete();
+    							}
+                    			//2. draw filename
+                    			var fileName = msg.filename;
+                    	 		var textRc1 = ::RECTF(contentX + this.bubblePadding*3 +iconSize, curY + this.bubblePadding, contentW - this.bubblePadding * 5 -iconSize, contentH - this.bubblePadding * 2);
+                   		 		var sf = ..gdip.stringformat();
+                   		 		sf.flags = 0x1000;
+                   		 		sf.trimming = 5;
+                   		 		graphics.drawString(fileName, fontMain, textRc1, sf, brushText);
+                   		 		//3. draw fileSize
+                   		 		var fileSize = msg.filesize;
+                   		 		var textRc2 = ::RECTF(contentX + this.bubblePadding*3 +iconSize, curY + this.bubblePadding*2 + this.fontSize *scaleX, contentW - this.bubblePadding * 5 -iconSize, contentH - this.bubblePadding * 2);
+								graphics.drawString(fileSize, fontTime, textRc2, sf, brushTime);
+								sf.delete();
+                   		 	} else{
+                    			//路径的文件不存在
+							 	var sf = ..gdip.stringformat();
+                    			sf.lineAlign = 1/*_StringAlignmentCenter*/ ;
+                   		 		sf.flags = 0x2000;
+                   		 		sf.trimming = 5;
+								var txtErr = "未找到文件: " ++ msg.content;
+                    			var errRc = ::RECTF(contentX + this.bubblePadding*2, curY + this.bubblePadding, contentW - this.bubblePadding * 4, contentH - this.bubblePadding * 2);
+                    			var brushErr = ..gdip.solidBrush(0xFFFF0000); // red
+                    			var curFont = ..gdip.family("Microsoft YaHei").createFont(this.fontSize * scaleX,2, 2);
+                    			graphics.drawString(txtErr, curFont, errRc, sf, brushErr);
+                    			brushErr.delete(); sf.delete(); curFont.delete();
+                    		}	
+                    	}
+                	}
+            	}
+            	curY += ..math.max(contentH, this.avatarSize) + padY;
+        	}
+	
+        	// 3. 绘制滚动条滑块
+        	if(contentHeight > viewH){
+            	var barH = ..math.max(20, (viewH / contentHeight) * viewH); 
+            	var maxScroll = contentHeight - viewH + padY;
+            	// 滑块的top坐标
+            	var barY = (scrollPos / maxScroll) * (viewH - barH);
+	
+            	var brushBar = ..gdip.solidBrush(0x88AAAAAA);
+            	graphics.fillRoundRect(brushBar, viewW - barW - 1, barY, barW, barH, 2);
+            	brushBar.delete();
+        	}
+	
+        	brushTime.delete(); brushText.delete();
+        	fontMain.delete(); fontTime.delete();
+        	strFormat.delete();
+        };  //ondrawContent()结束
+
+        // 处理鼠标滚轮
+        this.plus.onMouseWheel = function(flags,delta,lParam){
+			delta = delta / (120 / 3); 
+            var step = 60;	// 滚动步长
+            scrollPos -= (delta > 0 ? step : -step); 
+
+            clampScroll();	// 边界限制
+            this.plus.redraw(); 
+        };
+
+        // --- 鼠标按下处理（滚动条 + 右键逻辑） ---
+        this.plus.onMouseDown = function(wParam, lParam){
+            var x, y = ..win.getMessagePos(lParam);
+            var viewH = this.plus.height;
+            var viewW = this.plus.width;
+
+            // 判断是否点击在右侧滚动条感应区
+            if(contentHeight > viewH && x >= (viewW - barSenseWidth)){
+                isDragging = true;
+                dragStartY = y;
+                dragStartScrollPos = scrollPos;
+                this.plus.capture = true; 
+                return true;
+            }
+			
+			//修改光标
+			var i, msg = hitTest(x, y);
+			if(msg){
+				// 检查是否为 URL
+             	if(msg.contentType == 1){
+					var url = ..string.match(msg.content, urlPattern);
+    				if(url && (#url==#msg.content)){
+    		    		::User32.SetCursor(_cursor_hand);
+    				}   
+    			}
+			}
+			
+            // 右键单击检测
+            if(wParam & 0x2/*_MK_RBUTTON*/){
+                var i, msg = hitTest(x, y);
+                if(msg && this.onItemRightClick) this.onItemRightClick(i, msg, x, y);
+            }
+        };
+
+        // --- 鼠标单击与双击 ---
+        this.plus.onMouseClick = function(wParam, lParam){
+            var x, y = ..win.getMessagePos(lParam);
+            var i, msg = hitTest(x, y);
+            if(msg) {
+                if(this.onItemClick){
+            		var ret = this.onItemClick(i, msg, x, y);
+            		if(ret==true) return ; 
+				}
+             	// 检查是否为 URL
+             	if(msg.contentType == 1){
+    				var url = ..string.match(msg.content, urlPattern);
+    				if(url && (#url==#msg.content)){
+        				..process.openUrl(url);  //在浏览器打开url
+    				}
+    			}
+    		}
+        };
+
+        this.plus.onMouseDoubleClick = function(wParam, lParam){
+            var x, y = ..win.getMessagePos(lParam);
+            var i, msg = hitTest(x, y);
+            if(msg){
+                if(this.onItemDoubleClick){
+            		var ret = this.onItemDoubleClick(i, msg, x, y);
+            		if(ret==true) return ; 
+            	}
+            	//打开图片或文件
+            	if(msg.contentType == 2){
+            	    var  filePath = ..io.joinpath(msg.content);
+            	    if( isImageFile(filePath)){
+            	    	//image
+            	    	..process.execute(filePath);
+            		}else{
+            			//file
+            			..process.exploreSelect(filePath)
+            		}
+            	}
+            }
+        };
+
+        this.plus.onMouseMove = function(wParam, lParam){
+            var x, y = ..win.getMessagePos(lParam);
+            if(isDragging){
+                var viewH = this.plus.height;
+				var _, _, _, scaleY = this.plus.getScale();
+    			var pY = this.padding * scaleY;
+    		
+                // 计算滑块高度
+                var barH = ..math.max(20, (viewH / contentHeight) * viewH);
+                var availableTrack = viewH - barH;
+
+                if(availableTrack > 0){
+                    var moveY = y - dragStartY;
+                    var maxScroll = ..math.max(0, contentHeight - viewH + pY);
+                    // 根据滑块移动比例转换内容滚动位移
+                    scrollPos = dragStartScrollPos + (moveY / availableTrack * maxScroll);
+
+                    clampScroll();
+                    this.plus.redraw();
+                    return; 
+                }
+            }
+            
+            var i, msg = hitTest(x, y);
+            if(msg){
+                if(msg.contentType == 1){
+            		// 检查是否为 URL
+    				var url = ..string.match(msg.content, urlPattern);
+            		if(url && (#url==#msg.content)){
+            			::User32.SetCursor(_cursor_hand);
+            		}
+            	}
+            }
+        };
+
+        this.plus.onMouseUp = function(wParam, lParam){
+            if(isDragging){
+                isDragging = false;
+                this.plus.capture = false; 
+            }
+        };
+
+    	// --- 公开方法 ---
+    	// 1. 是否显示gif动画
+    	this.showGifAnimation = function(bool){
+    		if(!!bool == true) {
+    	    	//启动动画（每20ms更新一次）
+    	    	showAnimation = true;
+    			this.plus.startAnimation(20); 
+    		}else{
+    	    	showAnimation = false;
+    			this.plus.stopAnimation();
+    		}	
+    	}
+    	
+		// 2. 滚动到底部
+    	this.scrollToBottom = function(){
+        	// 首次重绘以更新 contentHeight
+        	this.plus.redraw(); 
+        	var viewH = this.plus.height;
+        	var _, _, _, scaleY = this.plus.getScale();
+    		var pY = this.padding * scaleY;
+    	
+        	if(contentHeight > viewH) {	// contentHeight 已经包含了底部的 padding，所以不需要再次加 padY;
+            	scrollPos = contentHeight - viewH + pY;
+        	} else {
+            	scrollPos = 0;
+        	}
+	
+        	clampScroll();
+        	this.plus.redraw();
+    	};
+    	
+    	// 3. 显示消息函数
+    	this.showMsg = function(userId,  content, contentType=1, sendTime, filename, filesize){
+        	if(!userId) error("参数@1不能为空");
+        	if(content==null || ..string.trim(content)=="") return;
+        	if(tonumber(contentType)==null){ contentType =1;}
+        	else{ if(tonumber(contentType)>2  || tonumber(contentType)<1) contentType =1;}
+        	if(sendTime==null || ..time.istime(sendTime)==false) sendTime = time();
+			
+			//保存数据到messages中
+        	..table.push(messages, {
+            	userId = userId;
+            	sendTime = sendTime.format("!%Y-%m-%d %H:%M:%S");
+            	contentType = contentType;
+            	content = content;
+            	filename = filename;
+            	filesize = filesize
+        	});
+	
+        	// 重新计算并滚动到底部
+        	this.scrollToBottom();
+    	};
+	
+
+    		
+    	// 4. 从文件加载聊天记录
+    	this.load = function(datas){
+        	if(type(datas) != type.table) error("参数必须是table",2);
+			messages = datas;
+	
+        	// 重新计算滚动条和布局
+        	this.scrollToBottom();
+    	};
+	};  //ctor 结束
+}
+
+/**intellisense()
+chatBox = 仿微信聊天记录显示组件
+chatBox(.(plus控件) = 创建聊天组件。用户表需包含：id, name, avatar(图片对象), bubbleColor(ARGB颜色)
+chatBox() = !chatBox.
+!chatBox.setUser1(.(用户1信息表) = 设置用户1的信息，包括id (必须), name, avatar(bitmap对象), bubbleColor(ARGB颜色)。
+!chatBox.setUser2(.(用户2信息表) = 设置用户2的信息，包括id (必须), name, avatar(bitmap对象), bubbleColor(ARGB颜色)。
+!chatBox.user1isRight = 用户1的头像是否显示在右侧，默认 true。
+!chatBox.showMsg(.(用户ID, 内容, 消息类型, 发送时间) = 添加一条消息。\n消息类型：1为文本，2为文件(此时@2内容为文件路径)。
+!chatBox.load(.(消息数据表) = 从数据表加载聊天记录并显示。
+!chatBox.clear() = 清空所有记录。
+!chatBox.fontSize = 消息文本字体大小，默认 14。
+!chatBox.fontName = 消息文本字体名称，默认 "Microsoft YaHei"。
+!chatBox.textColor = 消息文本颜色，ARGB 格式。
+!chatBox.sendTimeColor = 时间文本颜色，ARGB 格式。
+!chatBox.avatarSize = 头像显示大小，默认 40。
+!chatBox.avatarRound = 头像是否裁剪为圆形，布尔值。
+!chatBox.padding = 消息条目间距，默认 10。
+!chatBox.bubblePadding = 气泡内边距，默认 8。
+!chatBox.showGifAnimation(false) = 是否在聊天框中显示gif动画，参数为真时开启，默认不显示动画。
+!chatBox.onItemClick = @.onItemClick = function(index, msg, x, y){
+    __/*左键单击项事件, msg 为消息对象*/
+    return false;  //return true 取消默认事件
+}
+!chatBox.onItemDoubleClick = @.onItemDoubleClick = function(index, msg, x, y){
+    __/*左键双击项事件, msg 为消息对象*/
+    return false;  //return true 取消默认事件
+}
+!chatBox.onItemRightClick = @.onItemRightClick = function(index, msg, x, y){
+    __/*右键点击项事件, msg 为消息对象*/
+}
+end intellisense**/

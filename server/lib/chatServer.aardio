@@ -1,0 +1,687 @@
+//chatServer IM 服务器核心逻辑（协议路由、连接管理、文件传输）
+import web.socket.server;
+import JSON;
+import raw.pack;
+import security;
+import thread.channel;
+
+var time = ..time;
+var string = ..string;
+var table = ..table;
+var math = ..math;
+var io = ..io;
+var crypt = ..crypt;
+var thread = ..thread;
+var raw = ..raw;
+var JSON = ..JSON;
+var security = ..security;
+
+// 文件发送工作线程（纯函数，运行在独立工作线程）：
+// 负责同步磁盘 I/O（读文件、切分、打包），通过 frameChannel 有界队列把数据帧交给界面线程发送。
+// 有界队列提供天然背压：界面线程消费慢时，worker 阻塞在 send，不再继续读磁盘。
+var fileSendWorker = function(taskChannel, frameChannel){
+
+	import raw.pack;
+
+	while(true){
+		var task = taskChannel.receive();
+		if(!task || task.quit) break; // 收到哨兵任务（quit）时退出
+
+		var openOk, fileOrErr = call(..io.file, null, task.filePath, "rb");
+		if(!openOk){
+			frameChannel.send({taskId = task.taskId; done = true; error = "io.file 异常: " ++ tostring(fileOrErr)});
+			continue;
+		}
+		var file = fileOrErr;
+		if(!file){
+			frameChannel.send({taskId = task.taskId; done = true; error = "文件读取失败: " ++ tostring(task.filePath)});
+			continue;
+		}
+
+		var bufSize = task.chunkSize;
+		var buffer = ..raw.buffer(bufSize);
+		var fromUserFixed = ..raw.pack("<128s", task.fromUser);
+
+		// 起始帧：头部报文（含元数据，与客户端大文件上传协议一致）
+		var header = ..raw.pack("<128s128s256sI20s", task.fromUser, task.toUser, task.filename, task.filesize, task.timestamp);
+		frameChannel.send({taskId = task.taskId; isFirst = true; isLast = false; data = header; opcode = 2});
+
+		var sent = 0;
+		var lastFull = false;
+		while(var readSize = file.readBuffer(buffer)){
+			sent += readSize;
+			lastFull = (readSize == bufSize);
+			// 不满块 = 最后一块，发送 fin 帧
+			var currentChunk = lastFull ? buffer : ..raw.slice(buffer, 1, readSize);
+			var packData = ..raw.join([fromUserFixed, currentChunk]);
+			frameChannel.send({taskId = task.taskId; isFirst = false; isLast = !lastFull; data = packData; opcode = 0});
+		}
+		file.close();
+
+		// 当文件大小恰为 chunkSize 整数倍（或空文件）时，最后一块为满块未发 fin 帧，
+		// 补发一个只含发送者标识（128 字节）的空 fin 帧，接收端据此判定文件结束
+		if(lastFull || sent == 0){
+			frameChannel.send({taskId = task.taskId; isFirst = false; isLast = true; data = fromUserFixed; opcode = 0});
+		}
+
+		// 任务完成标记（界面线程据此清理 activeSends）
+		frameChannel.send({taskId = task.taskId; done = true});
+	}
+};
+
+namespace chatServer {
+	class ChatServer {
+		ctor(db, options, log){
+			this.db = db;
+			this.log = log : lambda(...) null;
+
+			var opt = options : {};
+			this.fileCacheDir = opt.fileCacheDir : "/im_file_cache/";
+			this.maxSmallFileSize = opt.maxSmallFileSize : 20971520;
+			this.chunkSize = opt.chunkSize : (512 * 1024);
+			this.heartbeatTimeout = opt.heartbeatTimeout : 300000;
+
+			io.createDir(this.fileCacheDir);
+
+			// 连接状态
+			this.userConnections = {};  // username -> {client, lastSeen, heartbeat}
+			this.socketToUser = {};     // client(hSocket) -> username
+			this.clientFiles = {};      // client(hSocket) -> 大文件接收缓存
+			this.ws = null;
+
+			// 文件发送工作线程：任务队列(界面线程→worker) + 数据帧队列(worker→界面线程)
+			this.taskChannel = thread.channel(16);   // 发送任务队列
+			this.frameChannel = thread.channel(8);   // 数据帧队列（有界，提供背压）
+			this.sendTaskSeq = 0;                    // 任务 ID 自增
+			this.activeSends = {};                   // taskId -> {client, ...}
+			thread.invoke(fileSendWorker, this.taskChannel, this.frameChannel);
+		};
+
+		// --- 基础收发封装 ---
+		send = function(client, str){
+			if(this.ws) this.ws.send(client, str);
+		};
+
+		sendJson = function(client, obj){
+			this.send(client, JSON.stringify(obj));
+		};
+
+		sendError = function(client, message){
+			this.sendJson(client, {msgType = "error"; message = message});
+		};
+
+		sendData = function(client, data, opcode, fin){
+			if(this.ws) this.ws.sendData(client, data, opcode, fin);
+		};
+
+		closeClient = function(client){
+			if(this.ws) this.ws.close(client);
+		};
+
+		publish = function(str){
+			if(this.ws) this.ws.publish(str);
+		};
+
+		// --- 启动 / 停止 ---
+		start = function(ip, port){
+			var me = this;
+			var ws = ..web.socket.server();
+
+			ws.onOpen = function(hSocket){};
+			ws.onClose = function(hSocket, err){ me.onClientClosed(hSocket); };
+			ws.onMessage = function(hSocket, msg){ me.handleMessage(hSocket, msg.data); };
+			ws.onFragment = function(hSocket, msg){ me.handleFragment(hSocket, msg); };
+			ws.onError = function(hSocket, err){ me.log("ERR", "Socket 错误: " ++ tostring(err)); };
+
+			if(ws.start(ip, port)){
+				this.ws = ws;
+				return true;
+			}
+			return null;
+		};
+
+		stop = function(){
+			// 通知文件发送工作线程退出（哨兵任务）
+			if(this.taskChannel){
+				this.taskChannel.send({quit = true});
+			}
+			// 清空发送任务并排空数据帧队列，让 worker 能完成 send 后处理 quit 哨兵退出
+			this.activeSends = {};
+			if(this.frameChannel){
+				var drainCount = 0;
+				while(drainCount < 100000){
+					var frame = this.frameChannel.receive(0);
+					if(!frame) break;
+					drainCount++;
+				}
+			}
+
+			// 清理未完成的大文件分片
+			for(hSocket, cache in this.clientFiles){
+				if(cache){
+					if(cache.file) cache.file.close();
+					if(cache.savePath) io.remove(cache.savePath);
+				}
+			}
+			this.clientFiles = {};
+			this.userConnections = {};
+			this.socketToUser = {};
+			if(this.ws){
+				this.ws.stop();
+				this.ws = null;
+			}
+			this.db.setAllOffline();
+		};
+
+		// --- 连接生命周期 ---
+		bindUser = function(client, username){
+			this.userConnections[username] = {
+				client = client;
+				lastSeen = time.tick();
+				heartbeat = false; // 收到首个心跳后才纳入超时清理，兼容旧客户端
+			};
+			this.socketToUser[client] = username;
+		};
+
+		// 踢掉旧连接（先摘除映射再关闭，避免 onClose 时序竞态误清新会话）
+		kickOldConnection = function(username, newClient){
+			var oldConn = this.userConnections[username];
+			if(oldConn && oldConn.client != newClient){
+				this.send(oldConn.client, JSON.stringify({msgType = "kicked"; reason = "你的账号在其他设备登录"}));
+				this.socketToUser[oldConn.client] = null;
+				this.userConnections[username] = null;
+				this.closeClient(oldConn.client);
+			}
+		};
+
+		// 主动断开并通知（注销/改密后强制下线）
+		kickClient = function(client, reason){
+			this.send(client, JSON.stringify({msgType = "kicked"; reason = reason}));
+			this.closeClient(client);
+		};
+
+		onClientClosed = function(client){
+			// 清理未完成的大文件分片传输
+			var cache = this.clientFiles[client];
+			if(cache){
+				if(cache.file) cache.file.close();
+				if(cache.savePath) io.remove(cache.savePath);
+				this.clientFiles[client] = null;
+			}
+
+			var uname = this.socketToUser[client];
+			if(uname){
+				this.db.setUserOnline(uname, false);
+				this.notifyFriendStatus(uname, false);
+				this.userConnections[uname] = null;
+				this.socketToUser[client] = null;
+				this.log("INFO", "用户下线: " ++ uname);
+			}
+		};
+
+		// 心跳巡检：清理"启用心跳但长时间无活动"的死连接
+		cleanStaleConnections = function(){
+			if(!this.ws) return;
+			var now = time.tick();
+			var stale = {};
+			for(uname, conn in this.userConnections){
+				if(conn && conn.heartbeat && (now - conn.lastSeen) > this.heartbeatTimeout){
+					this.log("WARN", "心跳超时，清理失效连接: " ++ uname);
+					table.push(stale, conn.client);
+				}
+			}
+			for(i=1;#stale;1){
+				this.closeClient(stale[i]);
+			}
+		};
+
+		// 好友上线/下线通知
+		notifyFriendStatus = function(username, isOnline){
+			var uid = this.db.getUserId(username);
+			if(!uid) return;
+			for friendName in this.db.eachOnlineFriend(uid){
+				var friendObject = this.userConnections[friendName];
+				if(friendObject){
+					this.send(friendObject.client, JSON.stringify({msgType = "friend_online"; friendname = username; online = isOnline;}));
+				}
+			}
+		};
+
+		// --- 文件流式转发 ---
+		// 磁盘 I/O（读文件、切分、打包）已迁到工作线程，此处仅投递任务并记录发送目标。
+		// 实际发送由 consumeSendQueue 在界面线程完成（保证 socket 线程安全）。
+		streamFile = function(client, fromUser, toUser, filename, filesize, timestamp, filePath){
+			this.sendTaskSeq++;
+			var taskId = this.sendTaskSeq;
+			this.activeSends[taskId] = {client = client};
+			this.taskChannel.send({
+				taskId = taskId;
+				filePath = filePath;
+				fromUser = fromUser;
+				toUser = toUser;
+				filename = filename;
+				filesize = filesize;
+				timestamp = timestamp;
+				chunkSize = this.chunkSize;
+			});
+		};
+
+		// 消费数据帧队列并发送（由界面线程定时器驱动，每次消费一批，避免长时间占用消息循环）
+		consumeSendQueue = function(){
+			if(!this.frameChannel) return;
+			var count = 0;
+			while(count < 64){
+				var frame = this.frameChannel.receive(0);
+				if(!frame) break;
+				count++;
+
+				if(frame.done){
+					this.activeSends[frame.taskId] = null;
+					continue;
+				}
+				if(frame.error){
+					this.log("ERR", tostring(frame.error));
+					this.activeSends[frame.taskId] = null;
+					continue;
+				}
+				if(!frame.data) continue;
+
+				var task = this.activeSends[frame.taskId];
+				if(!task) continue; // 任务已取消（客户端断开/服务器停止）
+
+				// 客户端断开则放弃本次发送
+				if(!this.ws || this.ws.isClosed(task.client)){
+					this.activeSends[frame.taskId] = null;
+					continue;
+				}
+
+				this.sendData(task.client, frame.data, frame.opcode, frame.isLast ? 1 : 0);
+			}
+		};
+
+		// 推送离线消息（登录成功后调用）
+		pushOfflineMessages = function(client, username){
+			var rows = this.db.getOfflineMessages(username);
+			for i, row in table.eachIndex(rows){
+				if(row.msgType == "text"){
+					this.send(client, JSON.stringify({
+						msgType = "message_offline"; from = row.from_user; to = row.to_user;
+						content = row.content; timestamp = row.timestamp;
+					}));
+				} elseif(row.msgType == "file"){
+					var file = io.file(row.content, "rb");
+					if(!file){
+						this.log("ERR", "离线文件缓存丢失，跳过: " ++ tostring(row.content));
+					} else {
+						var filesize = file.size();
+						if(filesize <= this.maxSmallFileSize){
+							var fileBase64 = crypt.encodeBin(file.readAll());
+							this.send(client, JSON.stringify({
+								msgType = "file_offline"; from = row.from_user; to = row.to_user;
+								filename = row.filename; filesize = row.filesize;
+								timestamp = row.timestamp; data = fileBase64;
+							}));
+						} else {
+							this.streamFile(client, row.from_user, row.to_user, row.filename, row.filesize, row.timestamp, row.content);
+						}
+						file.close();
+					}
+				}
+				this.db.markDelivered(row.id);
+			}
+			if(#rows > 0) this.log("INFO", "向 " ++ username ++ " 推送了 " ++ #rows ++ " 条离线消息");
+		};
+
+		// --- 大文件分片接收 ---
+		handleFragment = function(client, msg){
+			var cache = this.clientFiles[client];
+
+			if(msg.type == 2/*binary 第一帧*/){
+				var data = msg.data;
+				if(!data || #data < 128) return;
+				var from, to, filename, filesize = raw.pack.unpack("<128s128s256sI", data);
+
+				if(!this.socketToUser[client]) return; // 未登录连接不允许上传大文件
+
+				from = string.str(from);
+				to = string.str(to);
+				filename = security.sanitizeFilename(string.str(filename));
+				// 发送者身份以服务器侧登录态为准，杜绝二进制报文头伪造身份
+				from = this.socketToUser[client] : from;
+
+				var savePath = this.fileCacheDir ++ time.format("%Y%m%d%H%M%S") ++ "_" ++ tostring(math.random(100000,999999)) ++ "_" ++ filename;
+				this.clientFiles[client] = {
+					from = from; to = to; savePath = savePath;
+					file = io.file(savePath, "wb");
+					filename = filename; totalSize = filesize;
+					receivedSize = 0; headerParsed = true;
+				};
+				return;
+			}
+
+			// 后续数据帧：剔除每帧前 128 字节发送者标识
+			if(cache && cache.headerParsed && msg.dataSize > 128){
+				var fileData = raw.slice(msg.data, 129);
+				cache.file.write(fileData);
+				cache.receivedSize += #fileData;
+			}
+
+			if(msg.fin == 1){
+				if(cache && cache.file){
+					cache.file.close();
+					cache.headerParsed = false;
+
+					var timestamp = time.format("%Y-%m-%d %H:%M:%S");
+					var isOnline = this.userConnections[cache.to] ? 1 : 0;
+					this.db.insertMessage("file", cache.from, cache.to, cache.savePath, cache.filename, cache.totalSize, isOnline);
+
+					// 通知发送方发送完成
+					this.send(client, JSON.stringify({msgType = "file_sent"; to = cache.to; filename = cache.filename; timestamp = timestamp;}));
+
+					// 在线则转发给接收方
+					if(isOnline){
+						this.streamFile(this.userConnections[cache.to].client, cache.from, cache.to, cache.filename, cache.totalSize, timestamp, cache.savePath);
+					}
+
+					this.log("FILE", cache.from ++ " -> " ++ cache.to ++ ": " ++ cache.filename ++ " (大小: " ++ math.size64(cache.totalSize).format() ++ ")");
+					this.clientFiles[client] = null;
+				}
+			}
+		};
+
+		// --- 消息路由 ---
+		handleMessage = function(client, rawText){
+			var msg = this.parseJson(rawText);
+			if(!msg) return;
+			var cmd = msg.msgType;
+
+			// 心跳：不要求登录、不携带 data，必须最先处理
+			if(cmd == "heartbeat"){
+				var hbUser = this.socketToUser[client];
+				var hbConn = hbUser ? this.userConnections[hbUser] : null;
+				if(hbConn){
+					hbConn.lastSeen = time.tick();
+					hbConn.heartbeat = true;
+				}
+				this.send(client, '{"msgType":"heartbeat_ack"}');
+				return;
+			}
+
+			var data = msg.data;
+			if(!data) return;
+
+			// 身份鉴权：一律以服务器侧 socket->user 登录映射为准
+			var authUser = this.socketToUser[client];
+			if(!authUser && (cmd != "login") && (cmd != "register")){
+				this.sendError(client, "请先登录再执行该操作");
+				this.log("WARN", "未登录连接尝试执行指令: " ++ tostring(cmd));
+				return;
+			}
+
+			select(cmd) {
+				case "register" {
+					var username = string.trim(tostring(data.username : ""));
+					var password = tostring(data.password : "");
+					var avatar = tostring(data.avatar : "000.webp");
+					var sign = tostring(data.usersign : "");
+
+					if(!#username || !#password){
+						this.sendJson(client, {msgType = "register_result"; success = false; message = "必填项不能为空"});
+						return;
+					}
+					if(!security.validUsername(username)){
+						this.sendJson(client, {msgType = "register_result"; success = false; message = "用户名需2~30位，且不能包含空格及尖括号、引号等特殊字符"});
+						return;
+					}
+					if(#password < 4){
+						this.sendJson(client, {msgType = "register_result"; success = false; message = "密码至少需要4位"});
+						return;
+					}
+					// 头像字段防路径注入
+					var avaExt = io.splitpath(avatar).ext;
+					if(#avatar > 64 || string.indexOf(avatar, "/") || string.indexOf(avatar, '\\') || (string.lower(avaExt : "") != ".webp")){
+						avatar = "000.webp";
+					}
+					if(#sign > 100) sign = string.left(sign, 100);
+
+					if(this.db.userExists(username)){
+						this.sendJson(client, {msgType = "register_result"; success = false; message = "用户名已存在"});
+						return;
+					}
+
+					this.db.createUser(username, security.hashPassword(password), avatar, sign);
+					this.sendJson(client, {msgType = "register_result"; success = true; message = "注册成功"});
+					this.log("INFO", "用户注册: " ++ username);
+				}
+
+				case "unregister" {
+					var username = authUser;
+					var password = tostring(data.password : "");
+					var row = this.db.getUser(username);
+					if(row && security.verifyPassword(password, row.password)){
+						this.db.disableUser(row.id);
+						this.sendJson(client, {msgType = "unregister_result"; success = true; message = "注销成功"});
+						this.kickClient(client, "账户已注销");
+						this.log("INFO", "用户已注销: " ++ username ++ " (" ++ time.format("%Y-%m-%d %H:%M:%S") ++ ")");
+					} else {
+						this.sendJson(client, {msgType = "unregister_result"; success = false; message = "账户信息验证失败"});
+					}
+				}
+
+				case "modifyPass" {
+					var username = authUser;
+					var password = tostring(data.password : "");
+					var newPass = string.trim(tostring(data.newpass : ""));
+					if(#newPass < 4){
+						this.sendJson(client, {msgType = "modify_pass_result"; success = false; message = "新密码至少需要4位"});
+						return;
+					}
+					var row = this.db.getUser(username);
+					if(row && security.verifyPassword(password, row.password)){
+						this.db.updatePassword(row.id, security.hashPassword(newPass));
+						this.sendJson(client, {msgType = "modify_pass_result"; success = true});
+						this.kickClient(client, "密码已修改");
+						this.log("INFO", "用户 " ++ username ++ " 已修改账户密码（已强制下线）");
+					} else {
+						this.sendJson(client, {msgType = "modify_pass_result"; success = false; message = "账户信息验证失败"});
+					}
+				}
+
+				case "modifyAttr" {
+					var username = authUser;
+					var newSign = tostring(data.newsign);
+					var newAvatar = tostring(data.newavatar);
+					var row = this.db.getUser(username);
+					if(row){
+						if(newSign && #newSign > 100) newSign = string.left(newSign, 100);
+						if(newAvatar){
+							var avaExt = io.splitpath(newAvatar).ext;
+							if(#newAvatar > 64 || string.indexOf(newAvatar, "/") || string.indexOf(newAvatar, '\\') || (string.lower(avaExt : "") != ".webp")){
+								newAvatar = null;
+							}
+						}
+						var finalSign = newSign : row.sign;
+						var finalAva = newAvatar : row.avatarID;
+						this.db.updateAttr(row.id, finalSign, finalAva);
+						this.sendJson(client, {msgType = "modify_Attr_result"; success = true; data = {userName = username; userSign = finalSign; userAvatarId = finalAva;}});
+						this.log("INFO", "用户 " ++ username ++ " 已修改账户信息");
+					} else {
+						this.sendJson(client, {msgType = "modify_Attr_result"; success = false; message = "修改个人信息失败"});
+					}
+				}
+
+				case "login" {
+					var username = tostring(data.username : "");
+					var password = tostring(data.password : "");
+					var user = this.db.getUser(username);
+					if(!user || !security.verifyPassword(password, user.password)){
+						this.sendJson(client, {msgType = "login_result"; success = false; message = "账号或密码错误"});
+						return;
+					}
+
+					// 旧版无盐哈希自动升级为加盐哈希
+					if(security.isLegacyHash(user.password)){
+						this.db.updatePassword(user.id, security.hashPassword(password));
+					}
+
+					this.kickOldConnection(username, client);
+					this.bindUser(client, username);
+					this.db.setUserOnline(username, true);
+
+					this.sendJson(client, {msgType = "login_result"; success = true; data = {userName = username; userAvatarId = user.avatarID; userSign = user.sign;}});
+					this.log("INFO", "用户上线: " ++ username);
+
+					this.notifyFriendStatus(username, true);
+					this.pushOfflineMessages(client, username);
+				}
+
+				case "send_message" {
+					var fromUser = authUser;
+					var toUser = tostring(data.to : "");
+					var content = tostring(data.content : "");
+					if(!#toUser || !#content) return;
+
+					if(!this.db.getUserId(toUser)){
+						this.sendError(client, "接收方 [" ++ toUser ++ "] 不存在或已注销");
+						return;
+					}
+
+					var timestamp = time.format("%Y-%m-%d %H:%M:%S");
+					var isOnline = this.userConnections[toUser] ? 1 : 0;
+					this.db.insertMessage("text", fromUser, toUser, content, null, null, isOnline);
+
+					if(isOnline){
+						this.send(this.userConnections[toUser].client, JSON.stringify({
+							msgType = "message_online"; from = fromUser; to = toUser; content = content; timestamp = timestamp;
+						}));
+					}
+					this.sendJson(client, {msgType = "message_sent"; to = toUser; timestamp = timestamp;});
+					this.log("MSG", fromUser ++ " -> " ++ toUser ++ ": " ++ content);
+				}
+
+				case "send_file" {
+					var fromUser = authUser;
+					var toUser = tostring(data.to : "");
+					var filename = security.sanitizeFilename(data.filename : "");
+					var base64Data = tostring(data.data : "");
+					if(!#toUser || !#base64Data) return;
+
+					if(!this.db.getUserId(toUser)){
+						this.sendError(client, "接收方 [" ++ toUser ++ "] 不存在或已注销");
+						return;
+					}
+
+					var binary = crypt.decodeBin(base64Data);
+					if(!binary || #binary == 0){
+						this.sendError(client, "文件数据解码失败");
+						return;
+					}
+					if(#binary > this.maxSmallFileSize){
+						this.sendError(client, "文件超过 " ++ math.size64(this.maxSmallFileSize).format() ++ " 上限，请改用大文件分片发送");
+						return;
+					}
+
+					var timestamp = time.format("%Y-%m-%d %H:%M:%S");
+					var savePath = this.fileCacheDir ++ time.format("%Y%m%d%H%M%S") ++ "_" ++ tostring(math.random(100000,999999)) ++ "_" ++ filename;
+					io.file.write(savePath, binary);
+
+					var isOnline = this.userConnections[toUser] ? 1 : 0;
+					this.db.insertMessage("file", fromUser, toUser, savePath, filename, #binary, isOnline);
+
+					if(isOnline){
+						this.send(this.userConnections[toUser].client, JSON.stringify({
+							msgType = "file"; from = fromUser; to = toUser; filename = filename;
+							filesize = #binary; timestamp = timestamp; data = base64Data;
+						}));
+					}
+					this.sendJson(client, {msgType = "file_sent"; to = toUser; filename = filename; timestamp = timestamp;});
+					this.log("FILE", fromUser ++ " -> " ++ toUser ++ ": " ++ filename);
+				}
+
+				case "get_offline_messages" {
+					if(authUser) this.pushOfflineMessages(client, authUser);
+				}
+
+				case "get_users" {
+					var rows = this.db.getNonFriends(authUser);
+					var userList = {};
+					for i, row in table.eachIndex(rows){
+						table.push(userList, {username = row.name; useravatarId = row.avatarID; usersign = row.sign;});
+					}
+					this.sendJson(client, {msgType = "user_list"; data = userList;});
+					this.log("INFO", "用户 " ++ authUser ++ " 请求了找人列表，返回 " ++ #userList ++ " 条数据");
+				}
+
+				case "get_friends" {
+					var uid = this.db.getUserId(authUser);
+					if(!uid) return;
+					var rows = this.db.getFriends(uid);
+					var friendList = {};
+					for i, row in table.eachIndex(rows){
+						table.push(friendList, {name = row.name; avatarId = row.avatarID; sign = row.sign; online = (row.online == 1);});
+					}
+					this.sendJson(client, {msgType = "friend_list"; data = friendList;});
+				}
+
+				case "add_friend" {
+					var friendName = tostring(data.friendname : "");
+					var uid = this.db.getUserId(authUser);
+					var fid = this.db.getUserId(friendName);
+					if(!uid || !fid){
+						this.sendJson(client, {msgType = "add_friend_result"; success = false; message = "未找到该用户名称"});
+						return;
+					}
+					// 互相加好友（简化：无需确认）
+					this.db.addFriend(uid, fid);
+					this.db.addFriend(fid, uid);
+					this.sendJson(client, {msgType = "add_friend_result"; success = true; friendname = friendName;});
+					var timestamp = time.format("%Y-%m-%d %H:%M:%S");
+					if(this.userConnections[friendName]){
+						this.send(this.userConnections[friendName].client, JSON.stringify({msgType = "add_me_result"; timestamp = timestamp; friendname = authUser;}));
+					}
+				}
+
+				case "remove_friend" {
+					var friendName = tostring(data.friendname : "");
+					var uid = this.db.getUserId(authUser);
+					var fid = this.db.getUserId(friendName);
+					if(!fid){
+						this.sendJson(client, {msgType = "remove_friend_result"; success = false; message = "未找到该名称好友"});
+						return;
+					}
+					this.db.removeFriend(uid, fid);
+					this.sendJson(client, {msgType = "remove_friend_result"; success = true; friendname = friendName;});
+					if(this.userConnections[friendName]){
+						var timestamp = time.format("%Y-%m-%d %H:%M:%S");
+						this.send(this.userConnections[friendName].client, JSON.stringify({msgType = "remove_me_result"; timestamp = timestamp; friendname = authUser;}));
+					}
+				}
+
+				else {
+					this.sendError(client, "未知指令");
+				}
+			}
+		};
+
+		// 广播系统通知
+		broadcast = function(text){
+			var msgText = string.trim(text);
+			if(!#msgText) return false;
+			this.publish(JSON.stringify({
+				msgType = "system_notice";
+				content = msgText;
+				from = "SYSTEM";
+				timestamp = time.format("%Y-%m-%d %H:%M:%S");
+			}));
+			this.log("INFO", "系统广播: " ++ msgText);
+			return true;
+		};
+
+		// 安全解析 JSON（防止恶意客户端发送非法 JSON 导致回调异常）
+		parseJson = function(text){
+			var ok, result = call(JSON.parse, null, text);
+			if(ok) return result;
+			return null;
+		};
+	}
+}

@@ -1,0 +1,120 @@
+import win.ui;
+import fonts.fontAwesome;
+import plusList;
+import wsHelper;
+import thread.command;
+import plusStyle;
+/*DSG{{*/
+var winform = win.form(text="添加好友";right=496;bottom=324;border="dialog frame";exmode="toolwindow")
+winform.add(
+btnAddFriend={cls="plus";text="加为好友";left=355;top=279;right=469;bottom=305;bgcolor=0x8FB2B0;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=20}};notify=1;z=4};
+btnSearch={cls="plus";text="查找";left=369;top=19;right=468;bottom=44;bgcolor=0x8FB2B0;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=20}};notify=1;z=2};
+btncancle={cls="plus";text="取消";left=244;top=279;right=332;bottom=305;bgcolor=0x8FB2B0;font=LOGFONT(h=-13);iconStyle={align="left";font=LOGFONT(h=-13;name='FontAwesome');padding={left=20}};notify=1;z=6};
+plus={cls="plus";left=24;top=56;right=472;bottom=264;bgcolor=0xFFFFFF;edge=1;z=3};
+plus2={cls="plus";text="正在获取数据，请稍后...";left=24;top=279;right=191;bottom=300;bgcolor=0xFFFFFF;edge=1;z=7};
+static={cls="static";text="输入关键字：";left=26;top=15;right=131;bottom=46;center=1;transparent=1;z=5};
+txtKeyword={cls="edit";left=110;top=19;right=345;bottom=44;edge=1;multiline=1;z=1}
+)
+/*}}*/
+
+/*样式{{*/
+winform.btnSearch.skin(plusStyle.buttonLayuiDefault);
+winform.btnAddFriend.skin(plusStyle.buttonLayuiBlue);
+winform.btncancle.skin(plusStyle.buttonLayuiDefault);
+/*}}*/
+
+winform.userList = plusList(winform.plus);
+winform.plus2.setPos(winform.plus.getPos());
+
+//获取非好友用户列表
+winform.getUserList =function(curUser){
+	if( wsHelper.isConnected() ){
+    	var msg = {
+    		msgType="get_users";
+    		data={username=curUser}
+    	};
+		wsHelper.send(msg);
+	}
+}
+
+// 给userlist控件关联数据
+winform.onGetUserList =function(users){
+	var datas = {};
+    for i,v in table.eachIndex(users){
+        table.push(datas,
+        	{text = v.username; icon = v.useravatarId;}
+        )
+    }
+    winform.userList.listData = datas; 
+    winform.userList.refresh();  //刷新未添加的好友列表（可加快显示）
+    
+    winform.plus2.hide = true;
+    winform.btnSearch.disabled = false;
+    winform.btnAddFriend.disabled = false;
+}
+			
+// 监听消息
+var listener = thread.command();
+listener.onWsMessage = function(msg){
+	select(msg.msgType){
+		case "user_list" {
+			if(winform.onGetUserList) winform.onGetUserList(msg.data);
+		}
+		case "add_friend_result" {
+			if(msg.success==true){
+				winform.hide = true;
+				//通知主窗体已成功删除
+				if(winform.onFriendAdded) winform.onFriendAdded(msg.friendname);
+    		}else{
+    			winform.msgbox("添加好友 [ " ++ msg.friendname ++' ] 失败. \n' ++ "Err = " ++ msg.message, "系统消息");
+    		}
+		}
+	}
+}
+
+winform.btnSearch.oncommand = function(id,event){
+	var txt = winform.txtKeyword.text;
+	if(#txt==0) return; 
+	for i,v in table.eachIndex(winform.userList.listData){
+		var index = string.indexOf(v.text, txt);
+		if(index && index>0){
+			winform.userList.selectedIndex = i;
+			winform.userList.ensureVisible(i);
+			break;
+		}
+	}
+}
+
+winform.btnAddFriend.oncommand = function(id,event){
+
+	if(!winform.userList.selectedIndex || winform.userList.selectedIndex==0){
+		winform.msgbox("请选择一个要添加的账号");
+		return;
+	}
+
+    if( wsHelper.isConnected() ){
+        var index = winform.userList.selectedIndex;
+        var friendName = winform.userList.listData[index].text;
+        if(winform.msgboxTest("你确认要添加【" ++ friendName ++ "】为好友吗？","请确认")){  
+        	var msg = {
+    			msgType="add_friend";
+    			data={username=winform.curUser; friendname=friendName}
+    		};
+	    	wsHelper.send(msg); 
+	    }
+    }
+}
+
+//双击列表项
+winform.userList.onItemDoubleClick = function(){
+	winform.btnAddFriend.oncommand();
+}
+
+winform.btncancle.oncommand = function(id,event){
+	winform.close();
+}
+
+winform.btnSearch.disabled = true;
+winform.btnAddFriend.disabled = true;
+    			
+return winform;

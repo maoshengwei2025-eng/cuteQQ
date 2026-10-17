@@ -1,0 +1,33 @@
+import win.ui;
+import plusStyle;
+/*DSG{{*/
+var winform = win.form(text="设置服务器连接";right=485;bottom=184;border="dialog frame";exmode="toolwindow";max=false;min=false)
+winform.add(
+btnEnter={cls="plus";text="确 认";left=345;top=114;right=448;bottom=149;bgcolor=0x8FB2B0;default=1;font=LOGFONT(h=-13);notify=1;z=1};
+edit={cls="edit";text="ws://127.0.0.1:8080";left=31;top=62;right=449;bottom=92;edge=1;font=LOGFONT(h=-14);z=3};
+static={cls="static";text="请输入webSocket服务器的url：";left=31;top=30;right=253;bottom=56;font=LOGFONT(h=-14);transparent=1;z=2}
+)
+/*}}*/
+
+winform.btnEnter.skin(plusStyle.buttonLayuiBlue); //添加样式
+
+//利用fsys.config把winform.edit的文本存在配置文件中
+import fsys.config;
+var config = fsys.config( io.appData("/config/") );
+
+// 从配置文件加载
+if(config.settings.url) winform.edit.text = config.settings.url;
+
+winform.btnEnter.oncommand = function(id,event){
+	config.settings.url = winform.edit.text;
+	config.saveAll();
+	winform.endModal(true);
+}
+
+winform.edit.onOk = function(ctrl,alt,shift){ 
+	if(#string.trim(winform.edit.text)>0) winform.btnEnter.oncommand();
+}
+
+winform.show();
+win.loopMessage();
+

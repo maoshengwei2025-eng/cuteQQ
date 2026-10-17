@@ -1,0 +1,40 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<project ver="10" name="cuteQQ-server" libEmbed="true" icon="cuteCAT.ico" ui="win" output="cuteQQ-server.exe" CompanyName="单位名称" FileDescription="cuteQQ-server" LegalCopyright="Copyright (C) 作者 2026" ProductName="cuteQQ-server" InternalName="cuteQQ-server" FileVersion="0.0.0.1" ProductVersion="0.0.0.1" publishDir="/dist/" dstrip="false" local="false" ignored="false">
+	<file name="main.aardio" path="main.aardio" comment="main.aardio"/>
+	<folder name="资源文件" path="res" embed="true" local="false" ignored="false">
+		<folder name="avatars" path="res\avatars" comment="res\avatars">
+			<file name="000.webp" path="res\avatars\000.webp" comment="res\avatars\000.webp"/>
+			<file name="101.webp" path="res\avatars\101.webp" comment="res\avatars\101.webp"/>
+			<file name="102.webp" path="res\avatars\102.webp" comment="res\avatars\102.webp"/>
+			<file name="103.webp" path="res\avatars\103.webp" comment="res\avatars\103.webp"/>
+			<file name="104.webp" path="res\avatars\104.webp" comment="res\avatars\104.webp"/>
+			<file name="105.webp" path="res\avatars\105.webp" comment="res\avatars\105.webp"/>
+			<file name="106.webp" path="res\avatars\106.webp" comment="res\avatars\106.webp"/>
+			<file name="107.webp" path="res\avatars\107.webp" comment="res\avatars\107.webp"/>
+			<file name="108.webp" path="res\avatars\108.webp" comment="res\avatars\108.webp"/>
+			<file name="109.webp" path="res\avatars\109.webp" comment="res\avatars\109.webp"/>
+			<file name="110.webp" path="res\avatars\110.webp" comment="res\avatars\110.webp"/>
+			<file name="201.webp" path="res\avatars\201.webp" comment="res\avatars\201.webp"/>
+			<file name="202.webp" path="res\avatars\202.webp" comment="res\avatars\202.webp"/>
+			<file name="203.webp" path="res\avatars\203.webp" comment="res\avatars\203.webp"/>
+			<file name="204.webp" path="res\avatars\204.webp" comment="res\avatars\204.webp"/>
+			<file name="205.webp" path="res\avatars\205.webp" comment="res\avatars\205.webp"/>
+			<file name="206.webp" path="res\avatars\206.webp" comment="res\avatars\206.webp"/>
+			<file name="207.webp" path="res\avatars\207.webp" comment="res\avatars\207.webp"/>
+			<file name="208.webp" path="res\avatars\208.webp" comment="res\avatars\208.webp"/>
+			<file name="209.webp" path="res\avatars\209.webp" comment="res\avatars\209.webp"/>
+			<file name="210.webp" path="res\avatars\210.webp" comment="res\avatars\210.webp"/>
+			<file name="301.webp" path="res\avatars\301.webp" comment="res\avatars\301.webp"/>
+			<file name="302.webp" path="res\avatars\302.webp" comment="res\avatars\302.webp"/>
+			<file name="303.webp" path="res\avatars\303.webp" comment="res\avatars\303.webp"/>
+			<file name="304.webp" path="res\avatars\304.webp" comment="res\avatars\304.webp"/>
+			<file name="305.webp" path="res\avatars\305.webp" comment="res\avatars\305.webp"/>
+			<file name="306.webp" path="res\avatars\306.webp" comment="res\avatars\306.webp"/>
+			<file name="307.webp" path="res\avatars\307.webp" comment="res\avatars\307.webp"/>
+			<file name="308.webp" path="res\avatars\308.webp" comment="res\avatars\308.webp"/>
+			<file name="309.webp" path="res\avatars\309.webp" comment="res\avatars\309.webp"/>
+			<file name="310.webp" path="res\avatars\310.webp" comment="res\avatars\310.webp"/>
+		</folder>
+	</folder>
+	<folder name="窗体文件" path="dlg" comment="目录" embed="true" local="false" ignored="false"/>
+</project>

@@ -1,0 +1,126 @@
+//dockEdge 边缘吸附隐藏库
+import mouse;
+import winex;
+import win.ui;
+
+class dockEdge {
+	ctor( winform ){
+		this._form = winform;
+		this._form.clipch = 1; // 开启内部剪裁，减少界面闪烁
+
+		this.side = "";			// 吸附方向: "left", "right", "top"
+		this.docking = false;	// 当前是否已吸附隐藏
+		this.processing = false;// 是否正在执行动画
+		this.edgeSize = 4;		// 隐藏后留下的像素宽度
+		this.stepCount = 10;	// 动画总步数
+		this.stepDelay = 5;		// 每步延迟(毫秒)
+
+		// 挂接窗口消息
+		winform.wndproc = function(hwnd,msg,wParam,lParam){
+			if( msg == 0x3/*_WM_MOVE*/ ){
+				if(!this.processing && !this.docking){
+					this.checkSide();
+				}
+			}
+			elseif( msg == 0xA1/*_WM_NCLBUTTONDOWN*/ ){
+				this.side = ""; // 拖动时重置状态
+			}
+		}
+
+		// 监控鼠标位置
+		this.timerId = winform.setInterval(
+			300,
+			function(){
+				var hwnd = ..winex.fromPoint( ..mouse.getPos() );
+				var isInWindow = (..win.getThreadProcessId(hwnd) == ..thread.getId());
+
+				if( !isInWindow ){
+					if( #this.side && !this.docking ) this.slide(true);
+				}
+				else {
+					if( this.docking ) this.slide(false);
+				}
+			}
+		);
+	};
+
+	// 获取当前窗口所在显示器的工作区（避开任务栏）
+	getWorkArea = function() {
+		var mi = ..win.getMonitorInfo(this._form.hwnd);
+		return mi.rcWork;
+	};
+
+	checkSide = function(){
+		var scrw = this.getWorkArea().width;
+		var left,top,width,height = ..win.getPos(this._form.hwnd,true);
+		var right = left + width;
+
+		if(top <= 0) this.side = "top";
+		elseif(left <= 0 ) this.side = "left";
+		elseif(right >= scrw) this.side = "right";
+		else this.side = "";
+
+		return this.side;
+	};
+
+	slide = function(isHide){
+		if( this.processing || !#this.side ) return;
+		if( ..win.isIconic(this._form.hwnd) ) return; // 最小化时不处理
+
+		this.processing = true;
+		var hwnd = this._form.hwnd;
+		var scrw = this.getWorkArea().width;
+		var left,top,width,height = ..win.getPos(hwnd,true);
+
+		// 隐藏时去掉标题栏和边框，防止那一小条显示出残影
+		if(isHide){
+			this._form.modifyStyle(0xC00000/*_WS_CAPTION*/, 0);
+		}else{
+			// 恢复样式
+			this._form.modifyStyle(0, 0xC00000/*_WS_CAPTION*/);
+			..win.setTopmost(hwnd,true); // 滑出时置顶
+			..win.setTopmost(hwnd,false);
+		}
+
+		for(i=1;this.stepCount;1){
+			var ratio = i / this.stepCount;
+			if(!isHide) ratio = 1 - ratio; // 显示时反向计算
+
+			select(this.side) {
+				case "left" {
+					var targetX = - (width - this.edgeSize) * ratio;
+					..win.setPos(hwnd, targetX, top, width, height);
+				}
+				case "right" {
+					var targetX = (scrw - width) + (width - this.edgeSize) * ratio;
+					..win.setPos(hwnd, targetX, top, width, height);
+				}
+				case "top" {
+					var targetY = - (height - this.edgeSize) * ratio;
+					..win.setPos(hwnd, left, targetY, width, height);
+				}
+			}
+			..win.delay(this.stepDelay);
+		}
+
+		// 动画结束后的最终校准
+		if(!isHide){
+			this._form.modifyStyle(0, 0xC00000/*_WS_CAPTION*/);
+			select(this.side){
+				case "left" ..win.setPos(hwnd, 0, top);
+				case "right" ..win.setPos(hwnd, scrw - width, top);
+				case "top" ..win.setPos(hwnd, left, 0);
+			}
+		}
+
+		this.docking = isHide;
+		this.processing = false;
+	}
+}
+
+/**intellisense()
+win.ui.dockEdge(.(winform) = 开启窗口边缘吸附隐藏功能
+win.ui.dockEdge() = !win_ui_dockEdge.
+!win_ui_dockEdge.side = 当前吸附方向
+!win_ui_dockEdge.edgeSize = 隐藏后露出的像素，默认为 4
+end intellisense**/

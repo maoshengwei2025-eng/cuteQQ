@@ -1,0 +1,20 @@
+//config 服务器配置（可在此调整路径、大小上限、心跳等参数）
+namespace config {
+	// SQLite 数据库文件（相对应用基准目录）
+	dbPath = "/im_chat.db";
+
+	// 小文件（Base64 直传）缓存目录
+	fileCacheDir = "/im_file_cache/";
+
+	// 小文件上限（字节），超过则走分片大文件通道
+	maxSmallFileSize = 20971520; // 20MB
+
+	// 大文件分片大小
+	chunkSize = 512 * 1024; // 512KB
+
+	// 心跳超时（毫秒），超过则判定为死连接
+	heartbeatTimeout = 300000; // 5 分钟
+
+	// 心跳巡检周期（毫秒）
+	heartbeatCheckInterval = 60000; // 60 秒
+}

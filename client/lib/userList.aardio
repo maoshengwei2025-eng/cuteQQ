@@ -1,0 +1,333 @@
+//userList 好友列表控件
+import win.ui;
+import win.ui.tooltip;
+import gdip.imageAttributes;
+import gdip.webp;
+
+class userList {
+    ctor( plus ){
+        this = plus;
+        if(this.cls != "plus") error("必须在 plus 控件上构造", 2);
+
+        // --- 允许控件接收双击消息 ---
+        this.modifyStyle(, 0x8/*_CS_DBLCLKS*/);
+
+        var scaleX, scaleY = this.parent.getScale();
+
+        // --- 1. 属性配置 ---
+        this.itemHeight = 65 * scaleY;      
+        this.fontSizeName = 10.5;   
+        this.fontSizeSign = 9;      
+        this.scrollBarWidth = 10 * scaleX;
+        this.avatarRound = true;
+        this.showTip = true;    
+        this.showOnlineStatus = false;  
+		this.jumpSpeed = 0.22;     //摆动速度，建议范围 0.1 ~ 0.5
+		this.jumpAmplitude = 5;    //摆动幅度(角度)，建议范围 5 ~ 30
+
+        this.items = {}; 	/* name, avatar,  status, sign, online */  
+        this.selIndex = 0;      
+        this.hoverIndex = 0;    
+        this.scrollPos = 0;         
+        this.targetScrollPos = 0;   
+
+        // 动效控制变量
+        this.$jumpAngle = 0;         
+        this.$jumpTick = 0;          
+
+        // 颜色样式
+        this.colorBg = 0xFFFFFFFF;
+        this.colorHover = 0x0A000000;
+        this.colorSelect = 0x15000000;
+        this.colorOnline = 0xFF4CAF50; 
+        this.colorOffline = 0xFF9E9E9E; 
+
+        var grayAttr = ..gdip.imageAttributes();    
+        grayAttr.setColorMatrix({
+            0.299; 0.299; 0.299; 0; 0;
+            0.587; 0.587; 0.587; 0; 0;
+            0.114; 0.114; 0.114; 0; 0;
+            0; 0; 0; 1; 0;
+            0; 0; 0; 0; 1
+        });
+
+        var family = ..gdip.family("Microsoft YaHei UI" : "SimSun");
+        var strFormat = ..gdip.stringformat();
+        strFormat.trimming = 3/*_StringTrimmingEllipsisCharacter*/; 
+        strFormat.flags = 0x1000/*_StringFormatFlagsNoWrap*/;     
+
+        var tooltip = ..win.ui.tooltip(this.parent);
+        this.lastTooltipIndex = -1;
+
+        // 计算滚动信息
+        this.getScrollInfo = function(){
+            var rc = this.getClientRect();
+            var totalHeight = #this.items * this.itemHeight;
+            var viewHeight = rc.height;
+            var needSb = totalHeight > viewHeight;
+            var maxPos = ..math.max(0, totalHeight - viewHeight);
+            var thumbHeight = 0, thumbY = 0;
+            if(needSb){
+                thumbHeight = ..math.max(30 * scaleY, (viewHeight / totalHeight) * viewHeight);
+                thumbY = (this.scrollPos / maxPos) * (viewHeight - thumbHeight);
+            }
+            return needSb, totalHeight, viewHeight, maxPos, thumbHeight, thumbY;
+        }
+
+        // --- 自绘逻辑 ---
+        this.onDrawContent = function(graphics, rc){
+            var needSb, totalH, viewH, maxP, thH, thY = this.getScrollInfo();
+            var itemW = rc.width - (needSb ? this.scrollBarWidth : 0);
+
+            graphics.clear(this.colorBg);
+            graphics.smoothingMode = 4;
+
+            var avatarSize = this.itemHeight * 0.8;
+
+            for(i=1;#this.items;1){
+                var item = this.items[i];
+                var top = rc.top + (i-1) * this.itemHeight - this.scrollPos;
+                var bottom = top + this.itemHeight;
+
+                if(bottom < 0) continue;
+                if(top > rc.bottom) break;
+
+                var itemRc = ..gdip.RECTF(rc.left, top, itemW, this.itemHeight);
+
+                // 绘制项背景
+                if(i == this.selIndex){
+                    var br = ..gdip.solidBrush(this.colorSelect);
+                    graphics.fillRectangle(br, itemRc); br.delete();
+                } elseif(i == this.hoverIndex){
+                    var br = ..gdip.solidBrush(this.colorHover);
+                    graphics.fillRectangle(br, itemRc); br.delete();
+                }
+
+                // --- 头像绘制 (底部固定摇摆) ---
+                var avatarX = itemRc.x + 12 * scaleX;
+                var avatarY = itemRc.y + (this.itemHeight - avatarSize) / 2;
+
+                var gState = graphics.save(); 
+
+                if(item.isJumping){
+                    var centerX = avatarX + avatarSize / 2; 
+                    var centerY = avatarY + avatarSize;     // 底部支点
+
+                    graphics.translateTransform(centerX, centerY);
+                    graphics.rotateTransform(this.$jumpAngle); 
+                    graphics.translateTransform(-centerX, -centerY);
+                }
+
+                var bmpAvatar = null;
+                if(..gdip.bitmap.is(item.avatar)){
+                    bmpAvatar = item.avatar;
+                }elseif(type(item.avatar)==type.string){
+                    var imgpath = (_STUDIO_INVOKED) ? ..io.exist("/res/avatars/" ++ item.avatar) : ("/res/avatars/" ++ item.avatar);
+                    if(imgpath) bmpAvatar = ..gdip.bitmap( ..gdip.webp(imgpath) );
+                }
+                bmpAvatar := ..gdip.bitmap(40,40);
+
+                if(this.avatarRound){
+                    var path = ..gdip.path();
+                    path.addEllipse(avatarX, avatarY, avatarSize, avatarSize);
+                    graphics.setClipPath(path); 
+                    path.delete();
+                    var brAvatar = ..gdip.solidBrush(0xFFCCCCCC);
+                    graphics.fillEllipse(brAvatar, avatarX, avatarY, avatarSize, avatarSize);
+                }
+
+                if(item.status != "online"){
+                    graphics.drawImageRect(bmpAvatar, avatarX, avatarY, avatarSize, avatarSize, grayAttr);
+                } else {
+                    graphics.drawImageRect(bmpAvatar, avatarX, avatarY, avatarSize, avatarSize);
+                }
+                graphics.restore(gState); 
+
+                // 绘制在线状态点
+                if(this.showOnlineStatus){
+                    var statusSize = 10 * scaleY;
+                    var brStatus = ..gdip.solidBrush(item.status =="online" ? this.colorOnline : this.colorOffline);
+                    graphics.fillEllipse(brStatus, avatarX + avatarSize - statusSize, avatarY + avatarSize - statusSize, statusSize, statusSize);
+                    brStatus.delete();
+                    var penStatus = ..gdip.pen(this.colorBg, 2 * scaleY);
+                    graphics.drawEllipse(penStatus, avatarX + avatarSize - statusSize, avatarY + avatarSize - statusSize, statusSize, statusSize);
+                    penStatus.delete();
+                }
+
+                // 绘制文本
+                var fontName = family.createFont(this.fontSizeName, 1, 3);
+                var brName = ..gdip.solidBrush((item.status !="online") ? 0xFF888888 : 0xFF333333);
+                var nameRc = ..gdip.RECTF(itemRc.x + avatarSize + 22 * scaleX, itemRc.y + this.itemHeight*0.18, itemW - avatarSize - 50 * scaleX, this.fontSizeName * 2);
+                graphics.drawString(item.name, fontName, nameRc, strFormat, brName);
+
+                var fontSign = family.createFont(this.fontSizeSign, 0, 3);
+                var brSign = ..gdip.solidBrush((item.status !="online") ? 0xFFBBBBBB : 0xFF999999);
+                var signText = item.lastMsg || item.sign || "";
+                var signRc = ..gdip.RECTF(nameRc.x, itemRc.y +this.fontSizeName * 2 + this.itemHeight*0.28, nameRc.width, this.fontSizeSign * 2);
+                graphics.drawString(signText, fontSign, signRc, strFormat, brSign);
+
+                if(item.unread && item.unread > 0){
+                    var brUnread = ..gdip.solidBrush(0xFFFF4D4F);
+                    var unreadSize = 14 * scaleY;
+                    graphics.fillEllipse(brUnread, itemW - 30 * scaleX, itemRc.y + (this.itemHeight - unreadSize)/2, unreadSize, unreadSize);
+                    brUnread.delete();
+                }
+                fontName.delete(); fontSign.delete(); brName.delete(); brSign.delete();
+            }
+
+            if(needSb){
+                var brTrack = ..gdip.solidBrush(0x05000000);
+                var brThumb = ..gdip.solidBrush(0x1A000000);
+                graphics.fillRectangle(brTrack, rc.right - this.scrollBarWidth, 0, this.scrollBarWidth, viewH);
+                graphics.fillRectangle(brThumb, rc.right - this.scrollBarWidth + 2, thY, this.scrollBarWidth - 4, thH);
+                brTrack.delete(); brThumb.delete();
+            }
+        }
+
+        // --- 4. 交互处理 ---
+        this.onMouseMove = function(wParam, lParam){
+            var x, y = ..win.getMessagePos(lParam);
+            var needSb, _, viewH, maxP, thH, thY = this.getScrollInfo();
+            if(this.isDraggingThumb){
+                var dy = y - this.dragStartY;
+                var scrollPerPx = maxP / (viewH - thH);
+                this.targetScrollPos = ..math.max(0, ..math.min(maxP, this.dragStartScrollPos + (dy * scrollPerPx)));
+                this.scrollPos = this.targetScrollPos; 
+                return this.redraw(); 
+            }
+            var idx = ..math.floor((y + this.scrollPos) / this.itemHeight) + 1;
+            if(idx > #this.items || idx < 1 || (needSb && x > this.width - this.scrollBarWidth)) idx = 0;
+            if(idx != this.hoverIndex){
+                this.hoverIndex = idx;
+                if(idx > 0 && this.showTip){
+                    tooltip.addTool(this, this.items[idx].name);
+                    tooltip.tracking = true; 
+                } else { tooltip.addTool(this, ""); }
+                this.redraw();
+            }
+        }
+
+        this.onMouseDown = function(wParam, lParam){
+            var x, y = ..win.getMessagePos(lParam);
+            var needSb, _, viewH, maxP, thH, thY = this.getScrollInfo();
+            if(needSb && x > (this.width - this.scrollBarWidth)){
+                if(y >= thY && y <= thY + thH){
+                    this.isDraggingThumb = true;
+                    this.dragStartY = y;
+                    this.dragStartScrollPos = this.scrollPos;
+                    this.capture = true;
+                } else {
+                    this.targetScrollPos = ..math.max(0, ..math.min(maxP, (y / viewH) * maxP));
+                    this.startAnimation(16);
+                }
+                return;
+            }
+            if(this.hoverIndex > 0){
+                this.selIndex = this.hoverIndex;
+                this.redraw();
+                if(this.onItemClick) this.onItemClick(this.items[this.selIndex]);
+            }
+        }
+
+        this.onMouseUp = function(){ this.isDraggingThumb = false; this.capture = false; }
+
+        // --- 双击事件处理 ---
+        this.onMouseDoubleClick = function(wParam, lParam){
+            var x, y = ..win.getMessagePos(lParam);
+            var idx = ..math.floor((y + this.scrollPos) / this.itemHeight) + 1;
+            var needSb = this.getScrollInfo();
+            if(idx >= 1 && idx <= #this.items && !(needSb && x > this.width - this.scrollBarWidth)){
+                if(this.onDoubleClick) this.onDoubleClick(idx, this.items[idx]);
+            }
+        }
+
+        // 右键点击支持
+        this.wndproc = function(hwnd, message, wParam, lParam){
+            if(message == 0x0204/*_WM_RBUTTONDOWN*/){
+                var x, y = ..win.getMessagePos(lParam);
+                var idx = ..math.floor((y + this.scrollPos) / this.itemHeight) + 1;
+                var needSb = this.getScrollInfo();
+                if(idx >= 1 && idx <= #this.items && !(needSb && x > this.width - this.scrollBarWidth)){
+                    this.selIndex = idx; this.redraw();
+                    if(this.onRightClick) this.onRightClick(idx, this.items[idx]);
+                }
+            }
+        }
+
+        this.onMouseWheel = function(flags, delta, lParam){
+            var _, _, _, maxP = this.getScrollInfo();
+            this.targetScrollPos = ..math.max(0, ..math.min(maxP, this.targetScrollPos - delta * 2));
+            this.startAnimation(16);
+        }
+
+        this.onMouseLeave = function(){ this.hoverIndex = 0; this.redraw(); }
+
+        // --- 核心动画逻辑 ---
+        this.onAnimation = function(){
+            var needContinue = false;
+
+            if( ..math.abs(this.targetScrollPos - this.scrollPos) > 0.5 ){
+                this.scrollPos = this.scrollPos + (this.targetScrollPos - this.scrollPos) * 0.4;
+                needContinue = true; 
+            } else { this.scrollPos = this.targetScrollPos; }
+
+            var hasJump = false;
+            for(i=1;#this.items;1){ if(this.items[i].isJumping) { hasJump = true; break; } }
+
+            if(hasJump){
+                this.$jumpTick += this.jumpSpeed; // <--- 这里控制【速度】，数值越大摆得越快
+                this.$jumpAngle = ..math.sin(this.$jumpTick) * this.jumpAmplitude; // <--- 这里控制【幅度】，数值越大角度越大
+                needContinue = true;
+            }
+
+            this.redraw();
+            return needContinue; 
+        }
+    };
+
+    // --- 外部接口 ---
+    setData = function(data){
+        this.items = data : {};
+        this.selIndex = 0;
+        this.scrollPos = 0;
+        this.targetScrollPos = 0;
+        this.redraw();
+    }
+
+    setJump = function(index, enabled){
+        if(!this.items[index]) return;
+        this.items[index].isJumping = enabled;
+        if(enabled) this.startAnimation(16);
+        else this.redraw();
+    }
+
+    refresh = function(){ 
+        //按在线状况进行排序
+        //..table.sort( this.items, function(other) { return owner["status"] > other["status"] } );
+    	this.redraw();
+    } 
+}
+
+/**intellisense()
+mao.userList(.(plus控件) = 创建用户列表控件
+mao.userList() = !mao_userlist.
+!mao_userlist.setData(__) = 设置列表数据
+!mao_userlist.setJump(.(索引, 是否开启) = 设置指定项的头像是否“摇摆跳动”
+!mao_userlist.jumpSpeed = 摆动动效的速度（默认0.22）
+!mao_userlist.jumpAmplitude = 摆动动效的幅度角度（默认15）
+!mao_userlist.itemHeight = 项目高度
+!mao_userlist.fontSizeName = 姓名大小
+!mao_userlist.fontSizeSign = 签名大小
+!mao_userlist.showTip = 是否显示 Tooltip
+!mao_userlist.showOnlineStatus = 是否显示在线小圆点
+!mao_userlist.onItemClick = @.onItemClick = function(item){
+    __/*单击选中项回调*/
+}
+!mao_userlist.onDoubleClick = @.onDoubleClick = function(index, item){
+    __/*双击项回调*/
+}
+!mao_userlist.onRightClick = @.onRightClick = function(index, item){
+    __/*右键点击项回调*/
+}
+!mao_userlist.refresh() = 强制重绘列表
+end intellisense**/

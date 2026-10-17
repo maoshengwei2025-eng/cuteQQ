@@ -1,0 +1,150 @@
+//db 数据库访问层
+import sqlite;
+
+var time = ..time;
+var io = ..io;
+var sqlite = ..sqlite;
+
+// 建表与索引（文件级局部函数，供 ctor 调用，避免 ctor 调用类体方法）
+var createSchema = function(db){
+	db.exec("CREATE TABLE IF NOT EXISTS users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT UNIQUE,
+		password TEXT,
+		sign TEXT,
+		avatarID TEXT,
+		online INTEGER DEFAULT 0,
+		enable INTEGER DEFAULT 1
+	)");
+	db.exec("CREATE TABLE IF NOT EXISTS friends (
+		user_id INTEGER,
+		friend_id INTEGER,
+		PRIMARY KEY(user_id, friend_id)
+	)");
+	db.exec("CREATE TABLE IF NOT EXISTS messages (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		from_user TEXT,
+		to_user TEXT,
+		msgType TEXT,
+		content TEXT,
+		filename TEXT,
+		filesize INTEGER,
+		timestamp TEXT,
+		delivered INTEGER DEFAULT 0
+	)");
+	db.exec("CREATE INDEX IF NOT EXISTS idx_msg_to_delivered ON messages(to_user, delivered)");
+	db.exec("CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(from_user, to_user, timestamp)");
+};
+
+namespace db {
+	class Database {
+		ctor(path){
+			var dir = io.splitpath(path).dir;
+			if(dir && dir != "") io.createDir(dir);
+
+			var db = sqlite(path);
+			if(!db) error("无法打开数据库: " ++ path, 2);
+			this.db = db;
+
+			db.exec("PRAGMA journal_mode=WAL");
+			db.busyTimeout(5000);
+			createSchema(db);
+		};
+
+		close = function(){
+			if(this.db){
+				this.db.close();
+				this.db = null;
+			}
+		};
+
+		// --- 用户 ---
+		getUser = function(name){
+			return this.db.stepQuery("SELECT id, password, avatarID, sign FROM users WHERE name=? AND enable=1", {name});
+		};
+
+		getUserId = function(name){
+			var row = this.db.stepQuery("SELECT id FROM users WHERE name=? AND enable=1", {name});
+			return row ? row.id : null;
+		};
+
+		userExists = function(name){
+			return this.db.stepQuery("SELECT id FROM users WHERE name=?", {name}) ? true : false;
+		};
+
+		createUser = function(name, passwordHash, avatar, sign){
+			this.db.exec("INSERT INTO users (name, password, avatarID, sign) VALUES (@name, @password, @avatarID, @sign)", {
+				name = name; password = passwordHash; avatarID = avatar; sign = sign;
+			});
+		};
+
+		setUserOnline = function(name, online){
+			this.db.exec("UPDATE users SET online=@online WHERE name=@name", {name = name; online = online ? 1 : 0});
+		};
+
+		// 注销（软删除）
+		disableUser = function(id){
+			this.db.exec("UPDATE users SET online=0, enable=0 WHERE id=@id", {id = id});
+		};
+
+		updatePassword = function(id, passwordHash){
+			this.db.exec("UPDATE users SET password=@password WHERE id=@id", {id = id; password = passwordHash});
+		};
+
+		updateAttr = function(id, sign, avatar){
+			this.db.exec("UPDATE users SET sign=@sign, avatarID=@avatar WHERE id=@id", {id = id; sign = sign; avatar = avatar});
+		};
+
+		setAllOffline = function(){
+			this.db.exec("UPDATE users SET online=0");
+		};
+
+		// --- 好友 ---
+		addFriend = function(uid, fid){
+			this.db.exec("INSERT OR IGNORE INTO friends (user_id, friend_id) VALUES (@a, @b)", {a = uid; b = fid});
+		};
+
+		removeFriend = function(uid, fid){
+			this.db.exec("DELETE FROM friends WHERE (user_id=@a AND friend_id=@b) OR (user_id=@b AND friend_id=@a)", {a = uid; b = fid});
+		};
+
+		getFriends = function(uid){
+			return this.db.getTable("SELECT u.name, u.online, u.avatarID, u.sign FROM friends f JOIN users u ON f.friend_id = u.id WHERE f.user_id=? AND u.enable=1", {uid});
+		};
+
+		// 全部用户（服务器控制台用户列表用），在线用户排在前面
+		getAllUsers = function(){
+			return this.db.getTable("SELECT name, online, avatarID, sign FROM users WHERE enable=1 ORDER BY online DESC, name ASC");
+		};
+
+		// 在线好友名单（用于上线/下线通知），返回单列迭代器
+		eachOnlineFriend = function(uid){
+			return this.db.each("SELECT u.name FROM friends f JOIN users u ON f.friend_id = u.id WHERE f.user_id=? AND u.online=1 AND u.enable=1", {uid});
+		};
+
+		// 非好友用户（找好友列表）；使用位置参数避免命名参数重复绑定问题
+		getNonFriends = function(username){
+			return this.db.getTable(
+				"SELECT name, avatarID, sign FROM users WHERE name != ? AND enable = 1 AND id NOT IN (SELECT friend_id FROM friends WHERE user_id = (SELECT id FROM users WHERE name = ?))",
+				{username, username}
+			);
+		};
+
+		// --- 消息 ---
+		insertMessage = function(msgType, fromUser, toUser, content, filename, filesize, delivered){
+			this.db.exec("INSERT INTO messages (from_user, to_user, msgType, content, filename, filesize, timestamp, delivered) VALUES (@from, @to, @type, @content, @filename, @filesize, @time, @delivered)", {
+				from = fromUser; to = toUser; type = msgType; content = content;
+				filename = filename; filesize = filesize;
+				time = time.format("%Y-%m-%d %H:%M:%S"); delivered = delivered ? 1 : 0;
+			});
+		};
+
+		getOfflineMessages = function(username){
+			return this.db.getTable("SELECT * FROM messages WHERE to_user=? AND delivered=0 ORDER BY timestamp ASC", {username});
+		};
+
+		markDelivered = function(id){
+			this.db.exec("UPDATE messages SET delivered=1 WHERE id=@id", {id = id});
+		};
+	}
+}

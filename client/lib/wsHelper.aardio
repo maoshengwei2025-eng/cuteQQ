@@ -1,0 +1,131 @@
+﻿import web.socket.client;
+import JSON;
+import thread.command;
+import win;		// 定时器(win.setTimeout)所需，驱动心跳与自动重连
+import win.ui;	
+import fsys.config;
+
+namespace wsHelper {
+	//利用fsys.config从配置文件读取config.settings.url
+	var config = ..fsys.config( ..io.appData("/config/") );
+	var lastUrl  = config.settings.url : "ws://127.0.0.1:8080";  // 记录最后的连接地址
+    
+	var ws = ..web.socket.client();			// 创建单一实例
+
+	// --- 连接状态管理（自动重连 + 应用层心跳） ---
+	var manualClosed = false;   // 主动关闭标志（注销/退出程序时不触发自动重连）
+	var reconnectCount = 0;     // 已重连次数
+	var maxReconnect = 3;       // 最多自动重连次数
+	var heartRunning = false;   // 心跳链是否在跑
+
+    isConnected = function(){
+        return ws.readyState == 1;
+    };
+
+    // --- 应用层心跳：每30秒一跳 ---
+    // 让服务器能识别“拔网线式”异常断连（TCP 半开连接不会触发 onClose，用户会一直显示在线）
+    var startHeartbeat = null;
+    startHeartbeat = function(){
+    	if(heartRunning) return;
+    	heartRunning = true;
+    	..win.setTimeout(
+    		function(){
+    			heartRunning = false;
+    			if(ws.readyState == 1 && !manualClosed){
+    				ws.send('{"msgType":"heartbeat","data":{}}'); //服务器收到后刷新该连接的活跃时间
+    				startHeartbeat(); //续下一跳（upvalue 自引用，安全）
+    			}
+    		}, 30000
+    	);
+    }
+
+    connect = function(url){
+        if(url) lastUrl = url; // 记录 URL 供重连使用
+        manualClosed = false;  //外部主动 connect 视为放弃“手动关闭”状态
+        if(isConnected()) return true;
+
+        // 尝试连接
+        return ws.connect(lastUrl);
+    };
+
+    // 强制关闭并停止重连（用于注销/退出登录）
+    close = function(){
+    	manualClosed = true;  //标记为主动关闭，onClose 不再触发自动重连
+        ws.close();
+    }
+
+    send = function(data){
+        if(!isConnected()) return false, "未连接到服务器";
+        return ws.send( ..JSON.stringify(data) );
+    };
+    
+    sendData = function(buffer,opcode,isFinal){
+    	return ws.sendData(buffer,opcode,isFinal);
+    }
+    
+
+    // --- 消息分发核心 ---
+    ws.onOpen = function(){
+        manualClosed = false;
+        reconnectCount = 0;  //连接成功，重置自动重连计数
+        startHeartbeat();    //启动应用层心跳
+        ..thread.command.post("onWsMessage", { msgType = "sys_connected" });
+    };
+
+    ws.onMessage = function(msg){
+        var data = ..JSON.parse(msg.data);
+        if(data && data.msgType) ..thread.command.post("onWsMessage", data);
+    };
+    
+    ws.onFragment = function(msg){
+       	..thread.command.post("onWsMessage", { msgType = "recv_big_file", data = msg });
+    }
+    
+    ws.onClose = function(){
+        ..thread.command.post("onWsMessage", { msgType = "sys_closed"; msg = "连接已断开" });
+
+        // 自动重连：非主动关闭时，3秒后重试（最多3次），避免瞬间高频重连浪费资源
+        // 重连成功后 onOpen 会广播 sys_connected，由各窗体自行决定是否重新登录
+        if( !manualClosed && reconnectCount < maxReconnect ){
+        	reconnectCount++;
+        	..thread.command.post("onWsMessage", { msgType = "sys_reconnecting"; msg = "连接断开，正在尝试自动重连（第 " ++ reconnectCount ++ " 次）..." });
+        	..win.setTimeout(
+        		function(){
+        			if( !manualClosed && ws.readyState != 1 ){
+        				connect(); // 使用 lastUrl 重连
+        			}
+        		}, 3000
+        	);
+        }else{
+        	if(!manualClosed){ //非主动关闭且已达重连上限：通知界面放弃自动恢复
+        		..thread.command.post("onWsMessage", { msgType = "sys_reconnect_failed"; msg = "自动重连失败，请检查网络或服务器状态" });
+        	}
+        	reconnectCount = 0;  //放弃重连（达到上限或主动关闭），复位计数，等待用户手动 connect
+        }
+    };
+
+    ws.onError = function(err){
+        ..thread.command.post("onWsMessage", { msgType = "sys_error"; msg = err });
+    };
+
+    // 登录业务函数
+    login = function(user, pwd){
+         return send({
+            msgType = "login";
+            data = { username = user; password = pwd };
+        });
+    };
+}
+
+
+/**说明：
+wsHelper 提供了全局唯一的 WebSocket 客户端管理。
+通过 thread.command 机制，任何窗体都可以通过定义：
+listener.onWsMessage = function(data){ 
+    select(data.type) {
+        case "login_ok" { ... }
+        case "chat" { ... }
+    }
+}
+来响应服务器消息，无需在每个窗体里维护 ws 对象的引用。
+**/

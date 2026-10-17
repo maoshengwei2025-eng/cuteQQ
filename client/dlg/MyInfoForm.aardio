@@ -1,0 +1,180 @@
+import win.ui;
+import plusView;
+import gdip.webp;
+import wsHelper;
+import thread.command;
+import plusList;
+/*DSG{{*/
+var winform = win.form(text="我的资料";right=415;bottom=343;border="dialog frame";max=false;min=false)
+winform.add(
+btnClose={cls="plus";text="关 闭";left=224;top=280;right=320;bottom=306;bgcolor=0x8FB2B0;default=1;font=LOGFONT(h=-13);notify=1;z=12};
+btnModifyPass={cls="plus";text="修改密码";left=96;top=232;right=192;bottom=258;bgcolor=0x8FB2B0;font=LOGFONT(h=-13);notify=1;z=9};
+btnUnregister={cls="plus";text="注销账户";left=96;top=280;right=192;bottom=306;bgcolor=0x8FB2B0;font=LOGFONT(h=-13);notify=1;z=10};
+btnUpdateInfo={cls="plus";text="更新资料";left=224;top=232;right=320;bottom=258;bgcolor=0x8FB2B0;font=LOGFONT(h=-13);notify=1;z=11};
+lblAccount={cls="static";text="我的账号：";left=40;top=40;right=128;bottom=56;transparent=1;z=6};
+lblAvatar={cls="static";text="我的头像：";left=40;top=104;right=120;bottom=120;transparent=1;z=7};
+lblSign={cls="static";text="我的签名：";left=40;top=176;right=128;bottom=192;transparent=1;z=8};
+plusAvatar={cls="plus";left=128;top=88;right=184;bottom=144;border={color=0xA4A0A0;width=1};notify=1;repeat="scale";z=2};
+plusAvatarlist={cls="plus";left=184;top=144;right=520;bottom=376;bgcolor=0xFFFFFF;border={color=0xA4A0A0;width=1};z=3};
+plusDropdown={cls="plus";text='\uF106';left=184;top=88;right=206;bottom=144;anchors={top=1;right=1};border={color=0xA4A0A0;width=1};font=LOGFONT(h=-18;name='FontAwesome');notify=1;tabstop=1;z=4};
+txtAccount={cls="edit";left=128;top=40;right=368;bottom=64;edge=1;hideSel=1;readonly=1;tabstop=1;z=1};
+txtSign={cls="edit";left=128;top=168;right=368;bottom=192;edge=1;tabstop=1;z=5}
+)
+/*}}*/
+
+/*界面{{*/
+winform.btnModifyPass.skin(plusStyle.buttonLayuiDefault);
+winform.btnUpdateInfo.skin(plusStyle.buttonLayuiDefault);
+winform.btnUnregister.skin(plusStyle.buttonLayuiOrange);
+winform.btnClose.skin(plusStyle.buttonLayuiBlue);
+
+winform.plusAvatarlist.hide = true;
+winform.plusAvatarlist.orphanWindow();  //** 让checklist控件浮动（关键代码）
+
+// 初始化 plusView 组件
+var imgview = plusView(winform, winform.plusAvatarlist);
+imgview.showTitle = false;
+imgview.showSubTitle = false;
+imgview.autoHeight = false;
+imgview.itemWidth = 80;
+imgview.itemHeight = 100;
+
+var avatarList = {};
+if (_STUDIO_INVOKED/*在开发环境中*/) {
+	fsys.enum( "\res\avatars\", ["*.webp"],
+    	function(dir,filename,fullpath,findData){ 
+        	if(filename){ 
+            	..table.push(avatarList, {
+                	title = filename;
+                	bmp = gdip.bitmap( gdip.webp(fullpath) );
+                	path = fullpath;
+            	});
+        	}
+    	} , false/*如果此参数为 false 则忽略子目录*/
+	);
+}else{
+	// 发布环境：从 EXE 资源枚举
+    fsys.res.enum( 
+        function(module, resType, resName){
+            if(..string.startsWith(resName,"/RES/AVATARS/",true)){ //@2必须是"/"分隔符
+				table.push(avatarList, {
+                	title = io.splitpath("C:"++resName).file;
+                	bmp = gdip.bitmap( gdip.webp(resName) );
+                	path = resName;
+            	});
+            }
+            return true; 
+        }, "RES"
+    );
+}
+
+imgview.listData = avatarList;        
+
+imgview.onItemClick = function(index){
+    var avatarPath = imgview.listData[index].path;
+    var bmp= gdip.webp(avatarPath);
+    winform.plusAvatar.background = bmp;
+    winform.plusAvatar.selectedfileName = string.lower(imgview.listData[index].title);
+}
+
+//点击plus控件显示/隐藏checklist控件
+var isShow = false;
+winform.plusDropdown.oncommand = function(id, event){
+    isShow = !isShow;  
+    winform.plusDropdown.text = isShow ? '\uF107' : '\uF106';  //切换plus的icon图标
+    winform.plusAvatarlist.hide = !isShow;  
+    winform.plusAvatarlist.capture = true;
+}
+winform.plusAvatar.oncommand = function(id,event){
+	winform.plusDropdown.oncommand();
+}
+
+winform.plusAvatarlist.onMouseUp = function(wParam,lParam){
+	winform.plusAvatarlist.hide = true;
+    winform.plusDropdown.text = '\uF106';
+    isShow = false; 
+    winform.plusAvatarlist.capture = false;
+}
+winform.plusAvatarlist.onRightMouseUp = function(wParam,lParam){
+	winform.plusAvatarlist.hide = true;
+    winform.plusDropdown.text = '\uF106';
+    isShow = false; 
+    winform.plusAvatarlist.capture = false;
+}
+/*}}*/
+
+// 监听消息
+var listener = thread.command();
+listener.onWsMessage = function(msg){
+	select(msg.msgType) {
+		case "unregister_result" {	
+			if(msg.success){
+				winform.msgbox("账户注销成功","结果","info",5000);
+				if(winform.onUnregisted) winform.onUnregisted();
+				winform.close();
+			}else{
+				winform.msgbox(msg.message,"账户注销失败","error");
+			}
+		}
+		case "modify_Attr_result" {
+			if(msg.success){
+				winform.msgbox("信息修改成功","结果","info",5000);
+				winform.close();
+			}else{
+				winform.msgbox(msg.message,"账户更新失败","error");
+			}
+		}
+	}
+}
+
+// 修改密码
+winform.btnModifyPass.oncommand = function(id,event){
+	var frmChild = winform.loadForm("\dlg\inputPassForm.aardio");
+	frmChild.curUser = winform.curUser;
+	frmChild.show();
+}
+
+// 修改资料
+winform.btnUpdateInfo.oncommand = function(id,event){
+    if( wsHelper.isConnected() ){
+    	var msg = {
+    		msgType="modifyAttr";
+    		data={
+    			username =  winform.txtAccount.text;
+    			newsign = winform.txtSign.text;
+    			newavatar = winform.plusAvatar.selectedfileName : winform.curAvatarId;
+    		}
+    	};
+	    wsHelper.send(msg); 
+    }
+}
+
+// 注销账号
+import win.inputBox;
+winform.btnUnregister.oncommand = function(id,event){
+	//先让输入密码，验证一下身份
+	var inputBox = win.inputBox(winform.hwnd);
+	inputBox.text = "验证身份";
+	inputBox.info.text = "请输入当前账户的密码：";
+	inputBox.input.passwordChar = "*";
+    var userPwd = inputBox.doModal(); 
+    if(!userPwd) return; 
+    
+	var userName = winform.curUser : "马化腾";
+	if( winform.msgboxTest("你确认要注销账户【" ++ userName ++ "】吗？","请确认") ){  
+		if( wsHelper.isConnected() ){
+        	var msg = {
+    			msgType="unregister";
+    			data={username=userName; password=userPwd}
+    		};
+	    	wsHelper.send(msg);  //wsHelper会序列化消息
+    	}
+    }
+}
+
+// 关闭窗体
+winform.btnClose.oncommand = function(id,event){
+	winform.close();
+}
+
+return winform;

@@ -1,0 +1,14 @@
+# aardio IDE 构建临时文件
+.build/
+
+# 编译发布产物（EXE）
+dist/
+
+# 编辑器自动备份
+*.aa.bak.*
+
+# 运行时数据（严禁提交用户聊天数据）
+*.db
+*.db-journal
+*.log
+*.tmp

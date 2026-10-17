@@ -1,0 +1,385 @@
+//plusList 库
+import win.ui;
+import win.ui.tooltip;
+import gdip;
+import gdip.webp;
+import fonts.fontAwesome;
+
+class plusList {
+    ctor(ctrl){
+        this = ctrl; 
+        if(this.cls != "plus") error("必须在 plus 控件上构造", 2);
+		
+		this.notify = true;
+        this.buffered = true; // 开启双缓冲
+        var scaleX, scaleY = this.parent.getScale();
+
+        // --- 属性配置 ---
+        this.itemHeight = 50 * scaleY; 		//设置item高度
+        this.scrollBarWidth = 12 * scaleX; 	//设置滚动条宽度
+        this.listData = {};
+        this.selectedIndex = 0;
+        this.scrollPos = 0;
+        this.targetScrollPos = 0;
+        this.enableHover = true; //是否允许 Hover 效果
+
+		// 图片图标尺寸配置
+        this.iconWidth = 40 * scaleX; 
+        this.iconHeight = 40 * scaleY;
+
+
+        // 边距配置
+        this.textPadding = { 
+            left = 60 * scaleX;		// 左边距。为图标留出空间
+            right = 10 * scaleX; 	// 右边距
+            top = 0;				// 垂直居中由 lineAlign 处理,这里设为 0
+            bottom = 0 
+        };
+
+        // 颜色属性 (ARGB)
+        this.itemBgColor = 0xFFFFFFFF;
+        this.itemTextColor = 0xFF333333;
+        this.itemHoverBgColor = 0x150078D4;
+        this.itemSelectBgColor = 0x350078D4;
+        this.itemIconText = '\uF027';		// 默认图标 (书本) 尺寸默认为10*10 可在下面修改
+        this.itemIconColor = 0xFF666666;
+        this.itemBorderColor = 0xFFE0E0E0;	// 分割线颜色
+        this.thumbColor = 0xFFCDCDCD;		// 滚动条滑块颜色
+        this.trackColor = 0xFFF1F1F1;		// 滚动条轨道颜色
+
+        // 3. 选中项专用样式属性
+        this.selectTextSize = 10;       	// 选中项字体大小
+        this.selectTextColor = null;    	// 选中项字体颜色,为 null 则使用 itemTextColor
+        this.selectTextBold = false;    	// 选中项是否粗体
+		this.itemSelectIconColor = null;	// 选中项图标颜色
+		
+        // 默认字体资源
+        var family = ..gdip.family("Microsoft YaHei" : "SimSun");
+        var fontItem = family.createFont(10, 0, 3/*_UnitPoint*/);
+        var fontIcon = ..gdip.family("FontAwesome").createFont(14, 0, 3/*_UnitPoint*/);
+
+        var strFormat = ..gdip.stringformat();
+        strFormat.align = 0; 
+        strFormat.lineAlign = 1; 
+        strFormat.trimming = 3/*_StringTrimmingEllipsisCharacter*/;//字符末尾省略号
+        strFormat.flags = 0x1000/*_StringFormatFlagsNoWrap*/; //禁用自动换行
+		
+		// 初始化 Tooltip
+        var tooltip = ..win.ui.tooltip(winform);
+        this.lastTooltipIndex = -1;
+        
+        this.getScrollInfo = function(){
+            var rc = this.getClientRect();
+            var totalHeight = #this.listData * this.itemHeight;
+            var viewHeight = rc.height;
+            var needSb = totalHeight > viewHeight;
+            var maxPos = ..math.max(0, totalHeight - viewHeight);
+            var thumbHeight = 0, thumbY = 0;
+            if(needSb){
+                thumbHeight = ..math.max(20 * scaleY, (viewHeight / totalHeight) * viewHeight);
+                thumbY = (this.scrollPos / maxPos) * (viewHeight - thumbHeight);
+            }
+            return needSb, totalHeight, viewHeight, maxPos, thumbHeight, thumbY;
+        }
+		
+        this._imgCache = {};
+        var getIconImage = function(path){
+            if(!path) return;
+            if(this._imgCache[path]) return this._imgCache[path];
+
+            // 加载图片并缓存
+            path =  "\res\avatars\"++ path;
+            var img = ..gdip.bitmap(..gdip.webp(path));
+            if(img){
+                this._imgCache[path] = img;
+                return img;
+            }
+        }
+        
+        this.onDrawContent = function(graphics, rc){
+            var needSb, totalH, viewH, maxP, thH, thY = this.getScrollInfo();
+            var itemW = rc.width - (needSb ? this.scrollBarWidth : 0);
+
+            var mx, my = ..win.getMessagePos();
+            mx, my = ..win.toClient(this.hwnd, mx, my);
+
+            graphics.setClipRect(rc.left, rc.top, rc.width, rc.height);
+
+            var brushBg = ..gdip.solidBrush(this.itemBgColor);
+            graphics.fillRectangle(brushBg, rc);
+            brushBg.delete();
+
+            var firstIdx = ..math.floor(this.scrollPos / this.itemHeight);
+            var lastIdx = ..math.min(#this.listData, firstIdx + ..math.ceil(viewH / this.itemHeight) + 1);
+
+            var brushHover = ..gdip.solidBrush(this.itemHoverBgColor);
+            var brushSelect = ..gdip.solidBrush(this.itemSelectBgColor);
+            var brushTextNormal = ..gdip.solidBrush(this.itemTextColor);
+            var brushTextSelect = ..gdip.solidBrush(this.selectTextColor || this.itemTextColor);
+            var brushIcon = ..gdip.solidBrush(this.itemIconColor);
+            var brushIconSelect = ..gdip.solidBrush(this.itemSelectIconColor || this.itemIconColor);
+            var penBorder = ..gdip.pen(this.itemBorderColor, 1);
+            var fontItemSelect = family.createFont(this.selectTextSize, this.selectTextBold ? 1 : 0, 3/*_UnitPoint*/);
+
+            for(i = firstIdx + 1; lastIdx){
+                
+                var y = (i-1) * this.itemHeight - this.scrollPos;
+                var bottom = y + this.itemHeight;
+                
+                // 仅绘制视口可见区域的内容
+                if(bottom < 0) continue;
+                if(y > rc.bottom) break;
+                
+                var itemRc = ..gdip.RECTF(rc.left, y, itemW, this.itemHeight);
+                var isSelected = (i == this.selectedIndex);
+				
+				// 获取当前项数据
+                var itemData = this.listData[i];
+                var itemText =  itemData.text;
+                var itemIconPath = itemData.icon;
+
+                var isHover = this.enableHover && this.mouseOver 
+                            && mx >= itemRc.x && mx <= (itemRc.x + itemRc.width) 
+                            && my >= itemRc.y && my <= (itemRc.y + itemRc.height);
+
+                if( isSelected ){
+                    graphics.fillRectangle(brushSelect, itemRc);
+                } elseif( isHover ){
+                    graphics.fillRectangle(brushHover, itemRc);
+                }
+
+                // 1. 绘制图片图标
+                var img = getIconImage(itemIconPath);
+                if(img){
+                    // 计算图片居中位置
+                    var imgX = itemRc.x + 10 * scaleX;
+                    var imgY = itemRc.y + (this.itemHeight - this.iconHeight) / 2;
+                    graphics.drawImageRect(img, imgX, imgY, this.iconWidth, this.iconHeight);
+                }
+                else {
+                    // 如果没有图片，尝试回退到默认字符图标
+                    var iconRc = itemRc.copy();
+                    iconRc.x += 10 * scaleX; iconRc.width = 30 * scaleX;
+                    graphics.drawString(this.itemIconText, fontIcon, iconRc, strFormat,
+                         isSelected ? brushIconSelect : brushIcon);
+                }
+
+                // 2. 绘制文本
+                var textRc = ..gdip.RECTF(
+                    this.textPadding.left, y, 
+                    itemW - this.textPadding.left - this.textPadding.right, 
+                    this.itemHeight
+                );
+
+                graphics.drawString(itemText, 
+                    isSelected ? fontItemSelect : fontItem, 
+                    textRc, strFormat, 
+                    isSelected ? brushTextSelect : brushTextNormal);
+
+            	graphics.drawLine(penBorder, itemRc.left, itemRc.bottom-1, itemRc.right, itemRc.bottom-1);
+			}
+			
+            if(needSb){
+                var brushTrack = ..gdip.solidBrush(this.trackColor);
+                var brushThumb = ..gdip.solidBrush(this.thumbColor);
+                graphics.fillRectangle(brushTrack, rc.right - this.scrollBarWidth, 0, this.scrollBarWidth, viewH);
+                graphics.fillRectangle(brushThumb, rc.right - this.scrollBarWidth + 2, thY + 2, this.scrollBarWidth - 4, thH - 4);
+                brushTrack.delete(); brushThumb.delete();
+            }
+
+            brushHover.delete(); brushSelect.delete(); brushTextNormal.delete(); 
+            brushTextSelect.delete(); brushIcon.delete(); penBorder.delete();
+            fontItemSelect.delete();
+        }
+
+
+        this.onMouseMove = function(wParam, lParam){
+            var x, y = ..win.getMessagePos(lParam);
+            var needSb, _, viewH, maxP, thH = this.getScrollInfo();
+
+            if(this.isDraggingThumb){
+                var dy = y - this.dragStartY;
+                var scrollPerPx = maxP / (viewH - thH);
+                this.targetScrollPos = ..math.max(0, ..math.min(maxP, this.dragStartScrollPos + (dy * scrollPerPx)));
+                this.scrollPos = this.targetScrollPos; 
+                this.redraw(); 
+            } else {
+                // --- 文本截断检测与 Tooltip 显示 ---
+                var idx = ..math.floor((y + this.scrollPos) / this.itemHeight);
+                if(idx >= 0 && idx < #this.listData){
+                    if(this.lastTooltipIndex != idx){
+                        var itemtext = this.listData[idx + 1].text;
+                        var itemW = this.width - (needSb ? this.scrollBarWidth : 0);
+                        var availTextW = itemW - this.textPadding.left - this.textPadding.right;
+
+                        // 创建临时画布测量
+                        var g = ..gdip.graphics(this);
+                        var fontToMeasure = (idx == this.selectedIndex-1) 
+                            ? family.createFont(this.selectTextSize, this.selectTextBold ? 1 : 0, 3/*_UnitPoint*/)
+                            : fontItem;
+
+                        // 测量文本实际所需的宽度
+                        var size = g.measureString(itemtext, fontToMeasure, ..gdip.RECTF(), strFormat);
+                        g.delete();
+                        if(idx == this.selectedIndex-1) fontToMeasure.delete();
+
+                        if(size.width > availTextW){
+                            tooltip.addTool(this, itemtext);
+                            tooltip.tracking = true; // 立即激活显示
+                        } else {
+                            tooltip.addTool(this, ""); // 不显示
+                        }
+                        this.lastTooltipIndex = idx;
+                    }
+                } else {
+                    if(this.lastTooltipIndex != -1){
+                        tooltip.addTool(this, "");
+                        this.lastTooltipIndex = -1;
+                    }
+                }
+
+
+                if(this.enableHover) this.redraw();
+            }
+        }
+
+        this.onMouseWheel = function(flags, delta, lParam){
+            var _, _, _, maxP = this.getScrollInfo();
+            this.targetScrollPos = ..math.max(0, ..math.min(maxP, this.targetScrollPos - delta));
+            this.startAnimation(16);
+        }
+
+        // 2. 统一处理点击逻辑（左键单击、右键单击）
+        this.processClick = function(x, y, isRight){
+            var needSb, totalH, viewH, maxP, thH, thY = this.getScrollInfo();
+            if(!isRight && needSb && x > (this.width - this.scrollBarWidth)){
+                if(y >= thY && y <= thY + thH){
+                    this.isDraggingThumb = true;
+                    this.dragStartY = y;
+                    this.dragStartScrollPos = this.scrollPos;
+                    this.capture = true;
+                } else {
+                    this.targetScrollPos = ..math.max(0, ..math.min(maxP, (y / viewH) * totalH - viewH/2));
+                    this.startAnimation(16);
+                }
+                return;
+            }
+            var idx = ..math.floor((y + this.scrollPos) / this.itemHeight);
+            if(idx >= 0 && idx < #this.listData){
+                this.selectedIndex = idx+1;
+                this.redraw();
+                var thisData = this.listData[idx + 1];
+                var itemtext = ..type(thisData)== ..type.table ? thisData.text : thisData;
+                if(isRight){
+                    if(this.onItemRightClick) this.onItemRightClick(idx + 1, itemtext);
+                } else {
+                    if(this.onItemClick) this.onItemClick(idx + 1, itemtext);
+                }
+            }
+        }
+
+        this.onMouseDown = function(wParam, lParam){
+            var x, y = ..win.getMessagePos(lParam); 
+            this.processClick(x, y, false);
+        }
+
+        // 2. 增加右键点击和双击支持
+        this.wndproc = function(hwnd, message, wParam, lParam){
+            select(message) {
+                case 0x0204/*_WM_RBUTTONDOWN*/{
+                    var x, y = ..win.getMessagePos(lParam);
+                    this.processClick(x, y, true);
+                }
+                case 0x0203/*_WM_LBUTTONDBLCLK*/{
+                    var x, y = ..win.getMessagePos(lParam);
+                    var idx = ..math.floor((y + this.scrollPos) / this.itemHeight);
+                    if(idx >= 0 && idx < #this.listData){
+                        var itemtext = this.listData[idx + 1].text;
+                        if(this.onItemDoubleClick) this.onItemDoubleClick(idx + 1, itemtext);
+                    }
+                }
+            }
+        }
+
+        this.onMouseEnter = function(){ this.mouseOver = true; }
+        this.onMouseLeave = function(){ this.mouseOver = false; this.redraw(); }
+        this.onMouseUp = function(){ this.isDraggingThumb = false; this.capture = false; }
+
+        this.onAnimation = function(){
+            if( ..math.abs(this.targetScrollPos - this.scrollPos) > 0.5 ){
+                this.scrollPos = this.scrollPos + (this.targetScrollPos - this.scrollPos) * 0.3;
+                this.redraw(); 
+                return true; 
+            }
+            this.scrollPos = this.targetScrollPos;
+            this.redraw();
+        }
+        
+        this.ensureVisible = function(index){
+    		if(index < 1 || index > #this.listData) return;
+		
+    		var _, _, viewH, maxP = this.getScrollInfo();
+		
+    		// 计算目标项的顶部和底部坐标（相对于整个列表内容）
+    		var itemTop = (index - 1) * this.itemHeight;
+    		var itemBottom = itemTop + this.itemHeight;
+		
+    		var newTargetPos = this.targetScrollPos;
+		
+    		// 如果目标项在当前视口上方
+    		if( itemTop < this.targetScrollPos ){
+        		newTargetPos = itemTop;
+    		}
+    		// 如果目标项在当前视口下方
+    		elseif( itemBottom > (this.targetScrollPos + viewH) ){
+        		newTargetPos = itemBottom - viewH;
+    		}
+		
+    		// 限制滚动范围并触发动画
+    		this.targetScrollPos = ..math.max(0, ..math.min(maxP, newTargetPos));
+    		this.startAnimation(16);
+		};
+		
+		this.refresh = function(){
+			this.redraw();
+		}
+		
+		// 控件销毁时清理图片缓存
+        this.onDestroy = function(){
+            for(path, img in this._imgCache){
+                img.delete();
+            }
+        }
+    };
+}
+
+/**intellisense()
+mao.plusList = 高级 plus 自绘列表框
+mao.plusList(.(winform,plus控件) = 创建列表框
+mao.plusList() = !mao_plusList.
+!mao_plusList.listData = 列表数据数组
+!mao_plusList.itemHeight = 项目高度
+!mao_plusList.enableHover = 是否启用鼠标悬停背景色
+!mao_plusList.itemBgColor = 背景颜色 (0xAARRGGBB)
+!mao_plusList.itemTextColor = 默认文本颜色 (0xAARRGGBB)
+!mao_plusList.itemHoverBgColor = 鼠标悬停背景色 (0xAARRGGBB)
+!mao_plusList.itemSelectBgColor = 选中项背景色 (0xAARRGGBB)
+!mao_plusList.selectTextSize = 选中项字体大小
+!mao_plusList.selectTextColor = 选中项字体颜色
+!mao_plusList.selectTextBold = 选中项是否粗体
+!mao_plusList.itemIconText = 图标字符
+!mao_plusList.itemIconColor = 图标颜色
+!mao_plusList.itemSelectIconColor = 选中项图标颜色
+!mao_plusList.selectedIndex = 当前选中项索引(01开始)
+!mao_plusList.ensureVisible(index) = 确保指定的项目（从 1 开始的索引）在可见范围内
+!mao_plusList.onItemClick = @.onItemClick = function(index, text){
+    __/*左键单击项事件*/
+}
+!mao_plusList.onItemDoubleClick = @.onItemDoubleClick = function(index, text){
+    __/*左键双击项事件*/
+}
+!mao_plusList.onItemRightClick = @.onItemRightClick = function(index, text){
+    __/*右键点击项事件*/
+}
+!mao_plusList.redraw() = 重绘控件
+end intellisense**/

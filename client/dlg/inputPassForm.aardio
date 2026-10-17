@@ -1,0 +1,65 @@
+import win.ui;
+import wsHelper;
+import thread.command;
+import plusStyle;
+/*DSG{{*/
+var winform = win.form(text="修改密码";right=423;bottom=229;border="dialog frame";exmode="toolwindow")
+winform.add(
+btnCancle={cls="plus";text="取 消";left=152;top=168;right=248;bottom=194;bgcolor=0x8FB2B0;font=LOGFONT(h=-13);notify=1;z=3};
+btnEnter={cls="plus";text="确 认";left=272;top=168;right=368;bottom=194;bgcolor=0x8FB2B0;font=LOGFONT(h=-13);notify=1;z=4};
+static={cls="static";text="请输入旧密码：";left=50;top=40;right=142;bottom=66;transparent=1;z=1};
+static2={cls="static";text="请输入新密码：";left=51;top=78;right=143;bottom=104;transparent=1;z=2};
+static3={cls="static";text="再次输新密码：";left=49;top=115;right=141;bottom=141;transparent=1;z=5};
+txtNewPass={cls="edit";left=152;top=72;right=367;bottom=97;edge=1;password=1;z=7};
+txtNewPass2={cls="edit";left=152;top=113;right=367;bottom=138;edge=1;password=1;z=8};
+txtOldPass={cls="edit";left=153;top=37;right=368;bottom=62;edge=1;password=1;z=6}
+)
+/*}}*/
+
+/*界面{{*/
+winform.btnCancle.skin(plusStyle.buttonLayuiDefault);
+winform.btnEnter.skin(plusStyle.buttonLayuiBlue);
+/*}}*/
+
+// 监听消息
+var listener = thread.command();
+listener.onWsMessage = function(msg){
+	select(msg.msgType) {
+		case "modify_pass_result" {
+			if(msg.success){
+				winform.msgbox("密码修改成功","结果","info",5000);
+				winform.close();
+				if(winform.parent) winform.parent.close(); //关闭父窗体（我的资料），改密后服务器已强制下线
+			}else{
+				winform.msgbox(msg.message,"密码修改失败","error");
+			}
+		}
+	}
+}
+
+winform.btnEnter.oncommand = function(id,event){
+	var oldPass = string.trim( winform.txtOldPass.text );
+	if(!#oldPass) {winform.msgbox("请输入旧密码", "提示","warn"); winform.txtOldPass.setFocus(); return;}
+    var pwd = string.trim( winform.txtNewPass.text );  // 明文发送密码
+    var pwd2 = string.trim(winform.txtNewPass2.text);  // 明文发送密码
+    if(!#pwd || !#pwd2) return winform.msgbox("请输入密码", "提示","warn");
+    if(pwd != pwd2) return winform.msgbox("两次输入的密码不一致，请检查", "提示","warn");
+    
+    if( wsHelper.isConnected() ){
+    	var msg = {
+    		msgType="modifyPass";
+    		data={
+    			username =  winform.curUser;
+    			password = oldPass;
+    			newpass = pwd;
+    		}
+    	};
+	    wsHelper.send(msg); 
+    }
+}
+
+winform.btnCancle.oncommand = function(id,event){
+	winform.close();
+}
+
+return winform;
